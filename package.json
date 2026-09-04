@@ -1,0 +1,56 @@
+{
+  "name": "flowcanvas-studio",
+  "version": "2.0.0",
+  "description": "流绘：专注流程图绘制、阶段备注维护与 Markdown 文档导出的桌面工具",
+  "main": "main.js",
+  "scripts": {
+    "dev": "vite",
+    "start": "npm run build && electron .",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "pack:mac": "npm run build && electron-builder --mac --arm64",
+    "pack:mac:signed": "bash scripts/package-mac-arm64.sh",
+    "pack:win": "npm run build && electron-builder --win --x64"
+  },
+  "keywords": ["flowchart", "markdown", "electron", "react"],
+  "author": "FlowSketch",
+  "license": "MIT",
+  "dependencies": {
+    "@xyflow/react": "^12.11.6",
+    "html-to-image": "^1.11.13",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.1.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.0",
+    "vite": "^8.2.2",
+    "vitest": "^4.0.0"
+  },
+  "build": {
+    "appId": "com.flowcanvas.studio",
+    "productName": "流绘 FlowSketch",
+    "asar": true,
+    "files": ["main.js", "preload.js", "dist/**/*", "build/icon.png", "package.json"],
+    "directories": { "output": "release", "buildResources": "build" },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "type": "distribution",
+      "target": [{ "target": "dmg", "arch": ["arm64"] }]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+========================================
+  流绘 FlowSketch - 启动说明
+========================================
+
+首次运行：
+  npm install
+
+启动桌面应用：
+  npm start
+
+仅调试界面：
+  npm run dev
+
+运行测试：
+  npm test
+
+生产构建：
+  npm run build
+
+打包 macOS：
+  npm run pack:mac
+
+打包 Windows：
+  npm run pack:win
+
+环境要求：
+  Node.js >= 20
+  npm >= 10
+
+常用快捷键：
+  Cmd/Ctrl + S          保存工程
+  Cmd/Ctrl + Shift + S  另存为
+  Cmd/Ctrl + Z          撤销
+  Cmd/Ctrl + Shift + Z  重做
+  Enter                 新增同级阶段（节点聚焦时）
+  Tab                   新增下级阶段（节点聚焦时）
+  Delete / Backspace    删除所选
+  Cmd/Ctrl + Shift + E  导出 Markdown
+
+工程文件为 .flow.json；Markdown 仅作为导出文档。
