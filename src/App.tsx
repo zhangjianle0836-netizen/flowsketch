@@ -27,6 +27,7 @@ import { RENAME_STAGE_EVENT, StageNode } from './components/StageNode';
 import { RoutedEdge } from './components/RoutedEdge';
 import { optimizeConnectionHandles, orientConnectionFromOrigin, type ConnectionOrigin } from './flow/connections';
 import { createBlankDocument, createId, createStage, layoutDocument, parseFlowDocument } from './flow/document';
+import { edgePresentation } from './flow/edge-presentation';
 import { LibavoidWorkerClient } from './flow/libavoid-client';
 import { exportFlowToMarkdown } from './flow/markdown';
 import { routeDiagramEdges, updateDiagramRoutes, type DiagramRouteState } from './flow/routing';
@@ -138,21 +139,20 @@ function FlowSketchApp() {
     const nodeTitles = new Map(flowDocument.nodes.map((node) => [node.id, node.data.title]));
     return {
       routeState,
-      edges: displayEdges.map((edge) => ({
-        ...edge,
-        type: 'routed',
-        ariaLabel: [
-          `${nodeTitles.get(edge.source) || '起点'}到${nodeTitles.get(edge.target) || '终点'}的连线`,
-          typeof edge.label === 'string' && edge.label.trim() ? `标注：${edge.label.trim()}` : ''
-        ].filter(Boolean).join('，'),
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: edge.selected
-            ? (theme === 'dark' ? '#0a84ff' : '#0066cc')
-            : (theme === 'dark' ? '#98989d' : '#8e8e93')
-        },
-        data: { ...edge.data, route: routeState.routes.get(edge.id) }
-      }))
+      edges: displayEdges.map((edge) => {
+        const presentation = edgePresentation(theme, Boolean(edge.selected), edge.style);
+        return {
+          ...edge,
+          type: 'routed',
+          ariaLabel: [
+            `${nodeTitles.get(edge.source) || '起点'}到${nodeTitles.get(edge.target) || '终点'}的连线`,
+            typeof edge.label === 'string' && edge.label.trim() ? `标注：${edge.label.trim()}` : ''
+          ].filter(Boolean).join('，'),
+          markerEnd: { type: MarkerType.ArrowClosed, color: presentation.color },
+          style: presentation.style,
+          data: { ...edge.data, route: routeState.routes.get(edge.id) }
+        };
+      })
     };
   }, [displayEdges, flowDocument.nodes, routeVersion, theme]);
   useLayoutEffect(() => {
