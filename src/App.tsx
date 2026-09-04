@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   addEdge,
   applyEdgeChanges,
@@ -27,8 +27,9 @@ import { RENAME_STAGE_EVENT, StageNode } from './components/StageNode';
 import { RoutedEdge } from './components/RoutedEdge';
 import { optimizeConnectionHandles, orientConnectionFromOrigin, type ConnectionOrigin } from './flow/connections';
 import { createBlankDocument, createId, createStage, layoutDocument, parseFlowDocument } from './flow/document';
+import { LibavoidWorkerClient } from './flow/libavoid-client';
 import { exportFlowToMarkdown } from './flow/markdown';
-import { updateDiagramRoutes, type DiagramRouteState } from './flow/routing';
+import { routeDiagramEdges, updateDiagramRoutes, type DiagramRouteState } from './flow/routing';
 import { clearElementSelection, deleteSelectedElements, selectAllElements } from './flow/selection';
 import type { FlowDocument, FlowEdge, StageKind, StageNode as StageNodeType } from './types';
 
@@ -72,6 +73,11 @@ function FlowSketchApp() {
   const [redoStack, setRedoStack] = useState<FlowDocument[]>([]);
   const dragSnapshot = useRef<FlowDocument | null>(null);
   const routeStateRef = useRef<DiagramRouteState | undefined>(undefined);
+  const routingWorkerRef = useRef<LibavoidWorkerClient | null>(null);
+  const routeGenerationRef = useRef(0);
+  const routingFailedRef = useRef(false);
+  const [routingWorkerVersion, setRoutingWorkerVersion] = useState(0);
+  const [routeVersion, setRouteVersion] = useState(0);
   const connectionOriginRef = useRef<ConnectionOrigin | null>(null);
   const pendingSelectionRef = useRef<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -94,6 +100,17 @@ function FlowSketchApp() {
     documentRef.current = flowDocument;
   }, [flowDocument]);
 
+  useEffect(() => {
+    const worker = new LibavoidWorkerClient();
+    routingWorkerRef.current = worker;
+    routingFailedRef.current = false;
+    setRoutingWorkerVersion((value) => value + 1);
+    return () => {
+      if (routingWorkerRef.current === worker) routingWorkerRef.current = null;
+      worker.dispose();
+    };
+  }, []);
+
   const selectedNode = useMemo(
     () => flowDocument.nodes.find((node) => node.id === selectedNodeId) || null,
     [flowDocument.nodes, selectedNodeId]
@@ -112,27 +129,65 @@ function FlowSketchApp() {
   );
   const selectedElementCount = selectedNodes.length + selectedEdges.length;
   const hasMultiSelection = selectedElementCount > 1;
-  const routedEdges = useMemo(() => {
-    const displayEdges = flowDocument.edges.map((edge) => optimizeConnectionHandles(edge, flowDocument.nodes));
-    const routeState = updateDiagramRoutes(flowDocument.nodes, displayEdges, routeStateRef.current);
-    routeStateRef.current = routeState;
+  const displayEdges = useMemo(
+    () => flowDocument.edges.map((edge) => optimizeConnectionHandles(edge, flowDocument.nodes)),
+    [flowDocument.edges, flowDocument.nodes]
+  );
+  const routingResult = useMemo(() => {
+    const routeState = updateDiagramRoutes(flowDocument.nodes, displayEdges, routeStateRef.current, routeDiagramEdges);
     const nodeTitles = new Map(flowDocument.nodes.map((node) => [node.id, node.data.title]));
-    return displayEdges.map((edge) => ({
-      ...edge,
-      type: 'routed',
-      ariaLabel: [
-        `${nodeTitles.get(edge.source) || '起点'}到${nodeTitles.get(edge.target) || '终点'}的连线`,
-        typeof edge.label === 'string' && edge.label.trim() ? `标注：${edge.label.trim()}` : ''
-      ].filter(Boolean).join('，'),
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: edge.selected
-          ? (theme === 'dark' ? '#0a84ff' : '#0066cc')
-          : (theme === 'dark' ? '#98989d' : '#8e8e93')
-      },
-      data: { ...edge.data, route: routeState.routes.get(edge.id) }
-    }));
-  }, [flowDocument.edges, flowDocument.nodes, theme]);
+    return {
+      routeState,
+      edges: displayEdges.map((edge) => ({
+        ...edge,
+        type: 'routed',
+        ariaLabel: [
+          `${nodeTitles.get(edge.source) || '起点'}到${nodeTitles.get(edge.target) || '终点'}的连线`,
+          typeof edge.label === 'string' && edge.label.trim() ? `标注：${edge.label.trim()}` : ''
+        ].filter(Boolean).join('，'),
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: edge.selected
+            ? (theme === 'dark' ? '#0a84ff' : '#0066cc')
+            : (theme === 'dark' ? '#98989d' : '#8e8e93')
+        },
+        data: { ...edge.data, route: routeState.routes.get(edge.id) }
+      }))
+    };
+  }, [displayEdges, flowDocument.nodes, routeVersion, theme]);
+  useLayoutEffect(() => {
+    routeStateRef.current = routingResult.routeState;
+  }, [routingResult.routeState]);
+
+  useEffect(() => {
+    const worker = routingWorkerRef.current;
+    const dirtyEdges = displayEdges.filter((edge) => routingResult.routeState.dirtyEdgeIds.has(edge.id));
+    if (!worker || routingFailedRef.current || !dirtyEdges.length) return;
+    const generation = routeGenerationRef.current + 1;
+    routeGenerationRef.current = generation;
+
+    const isDragging = flowDocument.nodes.some((node) => node.dragging);
+    const timer = window.setTimeout(() => {
+      const request = worker.route(flowDocument.nodes, dirtyEdges);
+      request.promise.then((routes) => {
+        if (routeGenerationRef.current !== generation || routingWorkerRef.current !== worker) return;
+        const current = routeStateRef.current;
+        if (!current) return;
+        const mergedRoutes = new Map(current.routes);
+        for (const [edgeId, route] of routes) mergedRoutes.set(edgeId, route);
+        routeStateRef.current = { ...current, routes: mergedRoutes, dirtyEdgeIds: new Set() };
+        setRouteVersion((value) => value + 1);
+      }).catch((error) => {
+        if (routeGenerationRef.current !== generation || routingWorkerRef.current !== worker) return;
+        routingFailedRef.current = true;
+        console.error('libavoid 初始化或计算失败，已切换到兼容路由器', error);
+        setStatus('智能避障加载失败，已使用兼容路由');
+      });
+    }, isDragging ? 120 : 0);
+
+    return () => window.clearTimeout(timer);
+  }, [displayEdges, flowDocument.nodes, routingResult.routeState, routingWorkerVersion]);
+  const routedEdges = routingResult.edges;
   const availableConnectionTargets = useMemo(() => {
     if (!selectedNode) return [];
     const connectedTargetIds = new Set(
@@ -256,6 +311,7 @@ function FlowSketchApp() {
     if (dirty && !window.confirm('当前流程有未手动保存的更改，仍要新建吗？草稿将被替换。')) return;
     await window.flowAPI?.newFlow();
     const next = createBlankDocument();
+    routeStateRef.current = undefined;
     documentRef.current = next;
     setFlowDocument(next);
     setUndoStack([]);
@@ -276,6 +332,7 @@ function FlowSketchApp() {
       const result = await window.flowAPI.openFlow();
       if (result.canceled || !result.document) return;
       const opened = parseFlowDocument(result.document);
+      routeStateRef.current = undefined;
       documentRef.current = opened;
       setFlowDocument(opened);
       setUndoStack([]);

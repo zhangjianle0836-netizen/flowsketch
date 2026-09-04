@@ -18,6 +18,7 @@
   "dependencies": {
     "@xyflow/react": "^12.11.6",
     "html-to-image": "^1.11.13",
+    "libavoid-js": "0.5.0-beta.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
@@ -36,7 +37,7 @@
     "appId": "com.flowcanvas.studio",
     "productName": "流绘 FlowSketch",
     "asar": true,
-    "files": ["main.js", "preload.js", "dist/**/*", "build/icon.png", "package.json"],
+    "files": ["main.js", "preload.js", "dist/**/*", "build/icon.png", "THIRD_PARTY_NOTICES.md", "package.json"],
     "directories": { "output": "release", "buildResources": "build" },
     "mac": {
       "icon": "build/icon.icns",

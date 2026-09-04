@@ -93,4 +93,30 @@ describe('routeDiagramEdges', () => {
 
     expect(updated.routes.get('edge')).toBe(initial.routes.get('edge'));
   });
+
+  it('re-routes a blocked unrelated edge once dragging has finished', () => {
+    const nodes = [node('source', 0, 100), node('target', 560, 100), node('moving', 260, 320)];
+    const edges: FlowEdge[] = [{
+      id: 'edge',
+      source: 'source',
+      target: 'target',
+      sourceHandle: 'source-right',
+      targetHandle: 'target-left'
+    }];
+    const initial = updateDiagramRoutes(nodes, edges);
+    const draggingNodes = nodes.map((item) => item.id === 'moving'
+      ? { ...item, dragging: true, position: { x: 260, y: 100 } }
+      : item);
+    const whileDragging = updateDiagramRoutes(draggingNodes, edges, initial);
+    const droppedNodes = draggingNodes.map((item) => item.id === 'moving'
+      ? { ...item, dragging: false }
+      : item);
+    const afterDrop = updateDiagramRoutes(droppedNodes, edges, whileDragging);
+
+    expect(whileDragging.routes.get('edge')).toBe(initial.routes.get('edge'));
+    expect(whileDragging.dirtyEdgeIds.has('edge')).toBe(false);
+    expect(afterDrop.routes.get('edge')).not.toBe(initial.routes.get('edge'));
+    expect(afterDrop.dirtyEdgeIds.has('edge')).toBe(true);
+    expect(afterDrop.routes.get('edge')!.length).toBeGreaterThan(2);
+  });
 });

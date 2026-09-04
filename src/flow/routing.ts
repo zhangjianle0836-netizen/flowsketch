@@ -17,7 +17,12 @@ export type DiagramRouteState = {
   nodeGeometry: Map<string, NodeGeometry>;
   edgeGeometry: Map<string, string>;
   routes: Map<string, RoutePoint[]>;
+  dirtyEdgeIds: Set<string>;
+  isDragging: boolean;
+  draggedNodeIds: Set<string>;
 };
+
+export type EdgeRouter = (nodes: StageNode[], edges: FlowEdge[]) => Map<string, RoutePoint[]>;
 
 const DEFAULT_NODE_WIDTH = 210;
 const DEFAULT_NODE_HEIGHT = 88;
@@ -221,23 +226,42 @@ export function routeDiagramEdges(nodes: StageNode[], edges: FlowEdge[]) {
   return routes;
 }
 
+function routeIntersectsNodes(route: RoutePoint[], edge: FlowEdge, nodes: StageNode[], nodeIds: Set<string>) {
+  return nodes.some((node) => (
+    nodeIds.has(node.id) &&
+    node.id !== edge.source &&
+    node.id !== edge.target &&
+    segments(route).some((segment) => segmentHitsRect(segment, inflatedRect(node)))
+  ));
+}
+
 /**
  * Re-routes only edges whose endpoints or definitions changed. Moving a node
  * must not make unrelated connections jump to a different corridor.
  *
- * Full obstacle avoidance still happens when routes are first created. Once a
- * route exists, visual stability takes priority until one of its endpoints is
- * moved or the connection itself changes.
+ * Full obstacle avoidance happens when routes are first created. While a node
+ * is being dragged, visual stability takes priority for unrelated edges. Once
+ * the drag settles, only endpoint edges and routes blocked by the moved node
+ * are recalculated.
  */
 export function updateDiagramRoutes(
   nodes: StageNode[],
   edges: FlowEdge[],
-  previous?: DiagramRouteState
+  previous?: DiagramRouteState,
+  edgeRouter: EdgeRouter = routeDiagramEdges
 ): DiagramRouteState {
   const nodeGeometry = new Map(nodes.map((node) => [node.id, geometryOf(node)]));
   const edgeGeometryMap = new Map(edges.map((edge) => [edge.id, edgeGeometry(edge)]));
+  const isDragging = nodes.some((node) => node.dragging);
   if (!previous) {
-    return { nodeGeometry, edgeGeometry: edgeGeometryMap, routes: routeDiagramEdges(nodes, edges) };
+    return {
+      nodeGeometry,
+      edgeGeometry: edgeGeometryMap,
+      routes: edgeRouter(nodes, edges),
+      dirtyEdgeIds: new Set(edges.map((edge) => edge.id)),
+      isDragging,
+      draggedNodeIds: new Set()
+    };
   }
 
   const changedNodes = new Set(
@@ -245,39 +269,54 @@ export function updateDiagramRoutes(
       .filter((node) => !sameGeometry(previous.nodeGeometry.get(node.id), nodeGeometry.get(node.id)!))
       .map((node) => node.id)
   );
-  const nodeLookup = new Map(nodes.map((node) => [node.id, node]));
-  const routes = new Map<string, RoutePoint[]>();
-  const existingRoutes: RoutePoint[][] = [];
+  const draggedNodeIds = new Set(previous.draggedNodeIds);
+  if (isDragging) changedNodes.forEach((nodeId) => draggedNodeIds.add(nodeId));
+  const settledNodeIds = previous.isDragging && !isDragging
+    ? previous.draggedNodeIds
+    : new Set<string>();
+  const addedNodeIds = new Set(
+    nodes.filter((node) => !previous.nodeGeometry.has(node.id)).map((node) => node.id)
+  );
+  const obstacleIds = new Set([...settledNodeIds, ...addedNodeIds]);
+  const dirtyEdges: FlowEdge[] = [];
 
   for (const edge of edges) {
-    const sourceNode = nodeLookup.get(edge.source);
-    const targetNode = nodeLookup.get(edge.target);
-    if (!sourceNode || !targetNode) continue;
-
     const previousRoute = previous.routes.get(edge.id);
     const definitionChanged = previous.edgeGeometry.get(edge.id) !== edgeGeometryMap.get(edge.id);
-    const endpointChanged = changedNodes.has(edge.source) || changedNodes.has(edge.target);
-
-    if (previousRoute && !definitionChanged && !endpointChanged) {
-      routes.set(edge.id, previousRoute);
-      existingRoutes.push(previousRoute);
-      continue;
-    }
-
-    const source = portPosition(sourceNode, edge.sourceHandle, 'right');
-    const target = portPosition(targetNode, edge.targetHandle, 'left');
-    const sourceLead = moveOut(source.point, source.position);
-    const targetLead = moveOut(target.point, target.position);
-    const blockingRects = nodes
-      .filter((node) => node.id !== edge.source && node.id !== edge.target)
-      .map(inflatedRect);
-    const candidates = candidateRoutes(source.point, sourceLead, targetLead, target.point, blockingRects);
-    const route = chooseRoute(candidates, blockingRects, existingRoutes);
-    routes.set(edge.id, route);
-    existingRoutes.push(route);
+    const endpointChanged = changedNodes.has(edge.source) || changedNodes.has(edge.target) ||
+      settledNodeIds.has(edge.source) || settledNodeIds.has(edge.target);
+    const blockedAfterSettle = Boolean(previousRoute) && obstacleIds.size > 0 &&
+      routeIntersectsNodes(previousRoute!, edge, nodes, obstacleIds);
+    if (!previousRoute || definitionChanged || endpointChanged || blockedAfterSettle) dirtyEdges.push(edge);
   }
 
-  return { nodeGeometry, edgeGeometry: edgeGeometryMap, routes };
+  let updatedRoutes = new Map<string, RoutePoint[]>();
+  if (dirtyEdges.length) {
+    try {
+      updatedRoutes = edgeRouter(nodes, dirtyEdges);
+    } catch (error) {
+      console.error('避障路由计算失败，已切换到兼容路由器', error);
+      updatedRoutes = routeDiagramEdges(nodes, dirtyEdges);
+    }
+    const missingEdges = dirtyEdges.filter((edge) => !updatedRoutes.has(edge.id));
+    if (missingEdges.length) {
+      for (const [edgeId, route] of routeDiagramEdges(nodes, missingEdges)) updatedRoutes.set(edgeId, route);
+    }
+  }
+  const routes = new Map<string, RoutePoint[]>();
+  for (const edge of edges) {
+    const route = updatedRoutes.get(edge.id) || previous.routes.get(edge.id);
+    if (route) routes.set(edge.id, route);
+  }
+
+  return {
+    nodeGeometry,
+    edgeGeometry: edgeGeometryMap,
+    routes,
+    dirtyEdgeIds: new Set(dirtyEdges.map((edge) => edge.id)),
+    isDragging,
+    draggedNodeIds: isDragging ? draggedNodeIds : new Set()
+  };
 }
 
 export function orthogonalRoutePath(points: RoutePoint[]) {
