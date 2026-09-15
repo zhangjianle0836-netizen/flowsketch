@@ -6,8 +6,6 @@ import {
   Background,
   BackgroundVariant,
   Controls,
-  getNodesBounds,
-  getViewportForBounds,
   MarkerType,
   PanOnScrollMode,
   ReactFlow,
@@ -19,18 +17,20 @@ import {
   type NodeChange,
   type Viewport
 } from '@xyflow/react';
-import { toPng, toSvg } from 'html-to-image';
 import '@xyflow/react/dist/style.css';
 import { Icon } from './components/Icon';
 import { FlowMiniMap } from './components/FlowMiniMap';
 import { RENAME_STAGE_EVENT, StageNode } from './components/StageNode';
-import { RoutedEdge } from './components/RoutedEdge';
+import { EDGE_POSITION_EVENT, RoutedEdge } from './components/RoutedEdge';
 import { optimizeConnectionHandles, orientConnectionFromOrigin, type ConnectionOrigin } from './flow/connections';
 import { createBlankDocument, createId, createStage, layoutDocument, parseFlowDocument } from './flow/document';
+import { alignSelection, duplicateSelection, insertStageOnEdge, type Alignment } from './flow/editing';
+import { exportFlowSvg, placeEdgeLabels, svgToPng } from './flow/image-export';
+import { connectionProblem, validateFlow, type FlowIssue } from './flow/validation';
 import { edgePresentation } from './flow/edge-presentation';
 import { LibavoidWorkerClient } from './flow/libavoid-client';
 import { exportFlowToMarkdown } from './flow/markdown';
-import { routeDiagramEdges, updateDiagramRoutes, type DiagramRouteState } from './flow/routing';
+import { validEdgeRoute, routeDiagramEdges, updateDiagramRoutes, type DiagramRouteState } from './flow/routing';
 import { clearElementSelection, deleteSelectedElements, selectAllElements } from './flow/selection';
 import type { FlowDocument, FlowEdge, StageKind, StageNode as StageNodeType } from './types';
 
@@ -42,6 +42,11 @@ const STAGE_OPTIONS: Array<{ kind: StageKind; label: string; description: string
   { kind: 'decision', label: '判断', description: '条件分支' },
   { kind: 'end', label: '结束', description: '流程出口' }
 ];
+
+const HANDLE_OPTIONS = ['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right'] as const;
+const HANDLE_LABELS = ['左侧', '右侧', '上方左点', '上方右点', '下方左点', '下方右点'];
+type EdgeSettings = { source: string; target: string; sourceHandle: string; targetHandle: string; portMode: 'auto' | 'fixed'; waypoints: Array<{ x: number; y: number }>; labelPosition?: number; labelOffset?: { x: number; y: number } };
+const edgeSettingsFrom = (edge: FlowEdge): EdgeSettings => ({ source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle || 'source-right', targetHandle: edge.targetHandle || 'target-left', portMode: edge.data?.portMode || 'auto', waypoints: edge.data?.waypoints?.map((point) => ({ ...point })) || [], labelPosition: edge.data?.labelPosition, labelOffset: edge.data?.labelOffset });
 
 type NoteEditorState = {
   nodeId: string;
@@ -85,6 +90,11 @@ function FlowSketchApp() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [nodeDraft, setNodeDraft] = useState({ title: '', notes: '', kind: 'process' as StageKind });
   const [edgeDraft, setEdgeDraft] = useState('');
+  const [edgeSettings, setEdgeSettings] = useState<EdgeSettings>(() => edgeSettingsFrom({ id: '', source: '', target: '' }));
+  const reconnectingEdgeIdRef = useRef<string | undefined>(undefined);
+  const [imageScale, setImageScale] = useState(2);
+  const [transparentExport, setTransparentExport] = useState(false);
+  const [showChecks, setShowChecks] = useState(false);
   const [connectionTargetId, setConnectionTargetId] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
   const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
@@ -96,10 +106,6 @@ function FlowSketchApp() {
   const [status, setStatus] = useState('已就绪');
   const [exporting, setExporting] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-
-  useEffect(() => {
-    documentRef.current = flowDocument;
-  }, [flowDocument]);
 
   useEffect(() => {
     const worker = new LibavoidWorkerClient();
@@ -139,7 +145,7 @@ function FlowSketchApp() {
     const nodeTitles = new Map(flowDocument.nodes.map((node) => [node.id, node.data.title]));
     return {
       routeState,
-      edges: displayEdges.map((edge) => {
+      edges: placeEdgeLabels(flowDocument.nodes, displayEdges.map((edge) => {
         const presentation = edgePresentation(theme, Boolean(edge.selected), edge.style);
         return {
           ...edge,
@@ -152,7 +158,7 @@ function FlowSketchApp() {
           style: presentation.style,
           data: { ...edge.data, route: routeState.routes.get(edge.id) }
         };
-      })
+      }))
     };
   }, [displayEdges, flowDocument.nodes, routeVersion, theme]);
   useLayoutEffect(() => {
@@ -161,40 +167,44 @@ function FlowSketchApp() {
 
   useEffect(() => {
     const worker = routingWorkerRef.current;
-    const dirtyEdges = displayEdges.filter((edge) => routingResult.routeState.dirtyEdgeIds.has(edge.id));
-    if (!worker || routingFailedRef.current || !dirtyEdges.length) return;
+    const dirtyEdges = displayEdges.filter((edge) => !edge.data?.waypoints?.length && routingResult.routeState.dirtyEdgeIds.has(edge.id));
     const generation = routeGenerationRef.current + 1;
     routeGenerationRef.current = generation;
+    if (!worker || routingFailedRef.current || !dirtyEdges.length) return;
+    let cancelled = false;
 
     const isDragging = flowDocument.nodes.some((node) => node.dragging);
     const timer = window.setTimeout(() => {
       const request = worker.route(flowDocument.nodes, dirtyEdges);
       request.promise.then((routes) => {
-        if (routeGenerationRef.current !== generation || routingWorkerRef.current !== worker) return;
+        if (cancelled || routeGenerationRef.current !== generation || routingWorkerRef.current !== worker) return;
         const current = routeStateRef.current;
         if (!current) return;
         const mergedRoutes = new Map(current.routes);
-        for (const [edgeId, route] of routes) mergedRoutes.set(edgeId, route);
+        for (const [edgeId, route] of routes) {
+          const edge = dirtyEdges.find((item) => item.id === edgeId);
+          if (edge && validEdgeRoute(documentRef.current.nodes, edge, route)) mergedRoutes.set(edgeId, route);
+        }
         routeStateRef.current = { ...current, routes: mergedRoutes, dirtyEdgeIds: new Set() };
         setRouteVersion((value) => value + 1);
       }).catch((error) => {
-        if (routeGenerationRef.current !== generation || routingWorkerRef.current !== worker) return;
+        if (cancelled || routeGenerationRef.current !== generation || routingWorkerRef.current !== worker) return;
         routingFailedRef.current = true;
         console.error('libavoid 初始化或计算失败，已切换到兼容路由器', error);
         setStatus('智能避障加载失败，已使用兼容路由');
       });
     }, isDragging ? 120 : 0);
 
-    return () => window.clearTimeout(timer);
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [displayEdges, flowDocument.nodes, routingResult.routeState, routingWorkerVersion]);
   const routedEdges = routingResult.edges;
   const availableConnectionTargets = useMemo(() => {
-    if (!selectedNode) return [];
+    if (!selectedNode || selectedNode.data.kind === 'end') return [];
     const connectedTargetIds = new Set(
       flowDocument.edges.filter((edge) => edge.source === selectedNode.id).map((edge) => edge.target)
     );
     return flowDocument.nodes.filter((node) => (
-      node.id !== selectedNode.id && !connectedTargetIds.has(node.id)
+      node.data.kind !== 'start' && node.id !== selectedNode.id && !connectedTargetIds.has(node.id)
     ));
   }, [flowDocument.edges, flowDocument.nodes, selectedNode]);
 
@@ -204,8 +214,11 @@ function FlowSketchApp() {
   }, [selectedNode?.id]);
 
   useEffect(() => {
-    if (selectedEdge) setEdgeDraft(typeof selectedEdge.label === 'string' ? selectedEdge.label : '');
-  }, [selectedEdge?.id]);
+    if (selectedEdge) {
+      setEdgeDraft(typeof selectedEdge.label === 'string' ? selectedEdge.label : '');
+      setEdgeSettings(edgeSettingsFrom(selectedEdge));
+    }
+  }, [selectedEdge]);
 
   useEffect(() => {
     const dialog = noteDialogRef.current;
@@ -262,8 +275,9 @@ function FlowSketchApp() {
   const undo = useCallback(() => {
     const previous = undoStack.at(-1);
     if (!previous) return;
+    const snapshot = cleanDocument(documentRef.current);
     setUndoStack((stack) => stack.slice(0, -1));
-    setRedoStack((stack) => [...stack, cleanDocument(documentRef.current)]);
+    setRedoStack((stack) => [...stack, snapshot]);
     replaceDocument(previous);
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
@@ -273,8 +287,9 @@ function FlowSketchApp() {
   const redo = useCallback(() => {
     const next = redoStack.at(-1);
     if (!next) return;
+    const snapshot = cleanDocument(documentRef.current);
     setRedoStack((stack) => stack.slice(0, -1));
-    setUndoStack((stack) => [...stack, cleanDocument(documentRef.current)]);
+    setUndoStack((stack) => [...stack, snapshot]);
     replaceDocument(next);
     setStatus('已重做');
   }, [redoStack, replaceDocument]);
@@ -357,7 +372,7 @@ function FlowSketchApp() {
     const node = { ...createStage(kind, nextPosition), selected: true };
     commit((document) => {
       const edge = selected && selected.data.kind !== 'end' && kind !== 'start'
-        ? [{ id: createId('edge'), source: selected.id, target: node.id, sourceHandle: 'source-right', targetHandle: 'target-left', type: 'smoothstep' as const }]
+        ? [{ id: createId('edge'), source: selected.id, target: node.id, sourceHandle: 'source-right', targetHandle: 'target-left', data: { portMode: 'auto' as const }, type: 'smoothstep' as const }]
         : [];
       return { ...document, nodes: [...document.nodes.map((item) => ({ ...item, selected: false })), node], edges: [...document.edges, ...edge] };
     });
@@ -369,8 +384,9 @@ function FlowSketchApp() {
   const focusCanvasNode = useCallback((nodeId: string) => {
     pendingSelectionRef.current = nodeId;
     window.setTimeout(() => {
-      const nodeElement = document.querySelector<HTMLElement>(`.react-flow__node[data-id="${nodeId}"]`);
-      nodeElement?.focus();
+      const nodeElement = Array.from(document.querySelectorAll<HTMLElement>('.react-flow__node')).find((element) => element.dataset.id === nodeId);
+      if (!nodeElement || !documentRef.current.nodes.some((node) => node.id === nodeId)) return;
+      nodeElement.focus();
       setSelectedNodeId(nodeId);
       setSelectedEdgeId(null);
     }, 40);
@@ -419,7 +435,7 @@ function FlowSketchApp() {
     }
     const childCount = current.edges.filter((edge) => edge.source === parent.id).length;
     const child = {
-      ...createStage('process', { x: parent.position.x + 300, y: parent.position.y + childCount * 150 }),
+      ...createStage('process', current.direction === 'TB' ? { x: parent.position.x + childCount * 280, y: parent.position.y + 240 } : { x: parent.position.x + 310, y: parent.position.y + childCount * 160 }),
       selected: true
     };
     commit((document) => ({
@@ -431,7 +447,8 @@ function FlowSketchApp() {
         target: child.id,
         sourceHandle: 'source-right',
         targetHandle: 'target-left',
-        type: 'smoothstep'
+        type: 'smoothstep',
+        data: { portMode: 'auto' }
       }]
     }));
     setSelectedNodeId(child.id);
@@ -453,7 +470,7 @@ function FlowSketchApp() {
       .filter((node) => siblingIds.has(node.id))
       .reduce((maximum, node) => Math.max(maximum, node.position.y), selected.position.y);
     const sibling = {
-      ...createStage('process', { x: selected.position.x, y: siblingY + 150 }),
+      ...createStage('process', current.direction === 'TB' ? { x: Math.max(...current.nodes.filter((node) => siblingIds.has(node.id)).map((node) => node.position.x), selected.position.x) + 280, y: selected.position.y } : { x: selected.position.x, y: siblingY + 160 }),
       selected: true
     };
     const siblingEdges = incoming.map((edge) => ({
@@ -462,7 +479,8 @@ function FlowSketchApp() {
       target: sibling.id,
       sourceHandle: edge.sourceHandle || 'source-right',
       targetHandle: 'target-left',
-      type: 'smoothstep' as const
+      type: 'smoothstep' as const,
+      data: { portMode: 'auto' as const }
     }));
     commit((document) => ({
       ...document,
@@ -549,31 +567,78 @@ function FlowSketchApp() {
 
   const updateSelectedEdge = useCallback(() => {
     if (!selectedEdgeId) return;
+    const current = documentRef.current;
+    const old = current.edges.find((edge) => edge.id === selectedEdgeId);
+    const endpointsChanged = old?.source !== edgeSettings.source || old?.target !== edgeSettings.target;
+    const problem = endpointsChanged ? connectionProblem(current.nodes, current.edges, edgeSettings.source, edgeSettings.target, selectedEdgeId) : null;
+    if (problem) return setStatus(problem);
     commit((document) => ({
       ...document,
-      edges: document.edges.map((edge) => edge.id === selectedEdgeId ? { ...edge, label: edgeDraft.trim() } : edge)
+      edges: document.edges.map((edge) => edge.id === selectedEdgeId ? {
+        ...edge, source: edgeSettings.source, target: edgeSettings.target,
+        sourceHandle: edgeSettings.sourceHandle, targetHandle: edgeSettings.targetHandle,
+        label: edgeDraft.trim(), data: { ...edge.data, portMode: edgeSettings.portMode, waypoints: edgeSettings.waypoints.length ? edgeSettings.waypoints : undefined, labelPosition: edgeSettings.labelPosition, labelOffset: edgeSettings.labelOffset }
+      } : edge)
     }));
-    setStatus('连线说明已更新');
-  }, [commit, edgeDraft, selectedEdgeId]);
+    setStatus('连线设置已更新');
+  }, [commit, edgeDraft, edgeSettings, selectedEdgeId]);
+
+  const duplicate = useCallback(() => {
+    const current = documentRef.current;
+    if (!current.nodes.some((node) => node.selected) && !selectedNodeId) return setStatus('请先选择要复制的阶段');
+    commit((document) => duplicateSelection(document.nodes.some((node) => node.selected) ? document : { ...document, nodes: document.nodes.map((node) => ({ ...node, selected: node.id === selectedNodeId })) }));
+    const copies = documentRef.current.nodes.filter((node) => node.selected);
+    setSelectedNodeId(copies.at(-1)?.id || null);
+    setSelectedEdgeId(null);
+    setStatus('已复制所选阶段及内部连线');
+  }, [commit, selectedNodeId]);
+
+  const align = useCallback((mode: Alignment) => {
+    commit((document) => alignSelection(document, mode));
+    setStatus('所选阶段已整理');
+  }, [commit]);
+
+  const insertStage = useCallback(() => {
+    if (!selectedEdgeId) return;
+    commit((document) => insertStageOnEdge(document, selectedEdgeId));
+    const inserted = documentRef.current.nodes.find((node) => node.selected);
+    setSelectedEdgeId(null);
+    setSelectedNodeId(inserted?.id || null);
+    if (inserted) focusCanvasNode(inserted.id);
+    setStatus('已插入处理阶段，原分支条件保留在第一段连线上');
+  }, [commit, focusCanvasNode, selectedEdgeId]);
+
+  const flowIssues = useMemo(() => validateFlow(flowDocument), [flowDocument]);
+  const focusIssue = useCallback((issue: FlowIssue) => {
+    const current = documentRef.current;
+    const edge = current.edges.find((item) => item.id === issue.edgeId);
+    const next = { ...current, nodes: current.nodes.map((node) => ({ ...node, selected: node.id === issue.nodeId })), edges: current.edges.map((edge) => ({ ...edge, selected: edge.id === issue.edgeId })) };
+    documentRef.current = next;
+    setFlowDocument(next);
+    setSelectedNodeId(issue.nodeId || null);
+    setSelectedEdgeId(issue.edgeId || null);
+    const target = current.nodes.find((node) => node.id === (issue.nodeId || edge?.source));
+    if (target) reactFlow.fitView({ nodes: [target], padding: 0.5, duration: 180 });
+    window.setTimeout(() => document.getElementById(issue.edgeId ? 'edge-label' : 'stage-title')?.focus(), 80);
+    setStatus(issue.message);
+  }, [reactFlow]);
 
   const connectStages = useCallback((
     sourceId: string | null,
     targetId: string | null,
     sourceHandle = 'source-right',
-    targetHandle = 'target-left'
+    targetHandle = 'target-left',
+    portMode: 'auto' | 'fixed' = 'auto'
   ) => {
-    if (!sourceId || !targetId) return setStatus('请选择要连接的两个阶段');
-    if (sourceId === targetId) return setStatus('不能把阶段连接到自身');
-    const source = documentRef.current.nodes.find((node) => node.id === sourceId);
-    const target = documentRef.current.nodes.find((node) => node.id === targetId);
-    if (!source || !target) return setStatus('连接的阶段不存在');
-    const duplicate = documentRef.current.edges.some((edge) => edge.source === sourceId && edge.target === targetId);
-    if (duplicate) return setStatus('这条流程关系已经存在');
+    const problem = connectionProblem(documentRef.current.nodes, documentRef.current.edges, sourceId, targetId);
+    if (problem) return setStatus(problem);
+    if (!sourceId || !targetId) return;
     const optimized = optimizeConnectionHandles({
       source: sourceId,
       target: targetId,
       sourceHandle,
-      targetHandle
+      targetHandle,
+      data: { portMode }
     }, documentRef.current.nodes);
     commit((document) => ({
       ...document,
@@ -583,6 +648,7 @@ function FlowSketchApp() {
         target: targetId,
         sourceHandle: optimized.sourceHandle,
         targetHandle: optimized.targetHandle,
+        data: { portMode },
         type: 'smoothstep',
         markerEnd: { type: MarkerType.ArrowClosed }
       }, document.edges)
@@ -599,9 +665,48 @@ function FlowSketchApp() {
       oriented.source,
       oriented.target,
       oriented.sourceHandle || 'source-right',
-      oriented.targetHandle || 'target-left'
+      oriented.targetHandle || 'target-left',
+      'fixed'
     );
   }, [connectStages]);
+
+  const handleReconnect = useCallback((old: FlowEdge, connection: Connection) => {
+    const current = documentRef.current;
+    const problem = connectionProblem(current.nodes, current.edges, connection.source, connection.target, old.id);
+    if (problem) return setStatus(problem);
+    commit((document) => ({ ...document, edges: document.edges.map((edge) => edge.id === old.id ? { ...edge, ...connection, data: { ...edge.data, portMode: 'fixed', waypoints: undefined } } : edge) }));
+    setStatus('已重新连接，原条件说明已保留');
+  }, [commit]);
+
+  useEffect(() => {
+    let snapshot: FlowDocument | null = null;
+    const editPosition = (event: Event) => {
+      const { edgeId, phase, waypointIndex, point, labelOffset, labelPosition } = (event as CustomEvent<{ edgeId: string; phase: 'start' | 'move' | 'end' | 'cancel'; waypointIndex?: number; point?: { x: number; y: number }; labelOffset?: { x: number; y: number }; labelPosition?: number }>).detail;
+      if (phase === 'start') { snapshot = cleanDocument(documentRef.current); return; }
+      if (!snapshot) return;
+      if (phase === 'cancel') { documentRef.current = snapshot; setFlowDocument(snapshot); snapshot = null; return; }
+      const current = documentRef.current;
+      const next = { ...current, edges: current.edges.map((edge) => edge.id !== edgeId ? edge : {
+        ...edge, data: { ...edge.data,
+          ...(point && waypointIndex !== undefined ? { waypoints: edge.data?.waypoints?.map((old, index) => index === waypointIndex ? point : old) } : {}),
+          ...(labelOffset ? { labelOffset, labelPosition } : {})
+        }
+      }) };
+      documentRef.current = next;
+      setFlowDocument(next);
+      if (phase === 'end') {
+        const previous = snapshot;
+        snapshot = null;
+        if (JSON.stringify(previous.edges) === JSON.stringify(cleanDocument(next).edges)) return;
+        setUndoStack((stack) => [...stack.slice(-49), previous]);
+        setRedoStack([]);
+        replaceDocument(next);
+        setStatus('连线位置已更新');
+      }
+    };
+    window.addEventListener(EDGE_POSITION_EVENT, editPosition);
+    return () => window.removeEventListener(EDGE_POSITION_EVENT, editPosition);
+  }, [replaceDocument]);
 
   const handleNodesChange = useCallback((changes: NodeChange<StageNodeType>[]) => {
     const meaningful = changes.some((change) => change.type === 'position' && !change.dragging);
@@ -645,55 +750,47 @@ function FlowSketchApp() {
   }, [commit, reactFlow]);
 
   const exportMarkdown = useCallback(async () => {
+    const issues = validateFlow(documentRef.current);
+    if (issues.length) setShowChecks(true);
     const markdown = exportFlowToMarkdown(cleanDocument(documentRef.current));
     try {
       if (window.flowAPI) {
         const result = await window.flowAPI.exportMarkdown(markdown, documentRef.current.title);
         if (result.canceled) return setStatus('已取消导出');
       } else downloadInBrowser(markdown, `${documentRef.current.title}.md`, 'text/markdown;charset=utf-8');
-      setStatus('Markdown 文档已导出');
+      setStatus(issues.length ? `Markdown 已导出；流程检查发现 ${issues.length} 项待确认，请查看右侧检查列表` : 'Markdown 文档已导出');
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Markdown 导出失败');
     }
   }, []);
 
   const exportImage = useCallback(async (format: 'png' | 'svg') => {
-    const viewportElement = document.querySelector<HTMLElement>('.react-flow__viewport');
-    if (!viewportElement || !documentRef.current.nodes.length) return setStatus('画布中没有可导出的阶段');
+    if (exporting) return;
+    if (!documentRef.current.nodes.length) return setStatus('画布中没有可导出的阶段');
     setExporting(true);
     setStatus(`正在生成 ${format.toUpperCase()}…`);
     try {
-      const width = 1600;
-      const height = 900;
-      const bounds = getNodesBounds(documentRef.current.nodes);
-      const viewport = getViewportForBounds(bounds, width, height, 0.3, 2, 0.12);
-      const options = {
-        backgroundColor: theme === 'dark' ? '#1c1c1e' : '#f5f5f7',
-        width,
-        height,
-        style: {
-          width: `${width}px`,
-          height: `${height}px`,
-          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`
-        }
-      };
-      const dataUrl = format === 'png' ? await toPng(viewportElement, options) : await toSvg(viewportElement, options);
+      const current = cleanDocument(documentRef.current);
+      const issues = validateFlow(current);
+      if (issues.length) setShowChecks(true);
+      const edges = placeEdgeLabels(current.nodes, routedEdges);
+      const { svg, bounds } = exportFlowSvg(current, edges, transparentExport);
+      const png = format === 'png' ? await svgToPng(svg, bounds, imageScale) : null;
+      const dataUrl = png?.dataUrl || `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
       if (window.flowAPI) {
-        const result = await window.flowAPI.exportImage(dataUrl, format, documentRef.current.title);
+        const result = await window.flowAPI.exportImage(dataUrl, format, current.title);
         if (result.canceled) return setStatus('已取消导出');
       } else {
         const anchor = document.createElement('a');
         anchor.href = dataUrl;
-        anchor.download = `${documentRef.current.title}.${format}`;
+        anchor.download = `${current.title}.${format}`;
         anchor.click();
       }
-      setStatus(`${format.toUpperCase()} 图片已导出`);
+      setStatus(`${format.toUpperCase()} 已完整导出${png?.reduced ? '；大图已自动降低倍率，SVG 可保留全部精度' : ''}${issues.length ? `；有 ${issues.length} 项流程检查待确认` : ''}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '图片导出失败');
-    } finally {
-      setExporting(false);
-    }
-  }, [theme]);
+    } finally { setExporting(false); }
+  }, [exporting, imageScale, routedEdges, transparentExport]);
 
   const updateViewport = useCallback((_event: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     documentRef.current = { ...documentRef.current, viewport };
@@ -707,20 +804,23 @@ function FlowSketchApp() {
       const isInDialog = Boolean(target.closest('dialog'));
       const canvasShortcutAllowed = !isEditing && !isInDialog;
       const canvasNodeElement = target.closest<HTMLElement>('.react-flow__node');
-      const activeCanvasNodeId = canvasNodeElement?.dataset.id;
+      const activeCanvasNodeId = target === canvasNodeElement ? canvasNodeElement?.dataset.id : undefined;
       const command = event.metaKey || event.ctrlKey;
       if (command && event.key.toLowerCase() === 's') {
         event.preventDefault();
         handleSave(event.shiftKey);
-      } else if (command && event.key.toLowerCase() === 'z' && !event.shiftKey) {
+      } else if (canvasShortcutAllowed && command && event.key.toLowerCase() === 'z' && !event.shiftKey) {
         event.preventDefault();
         undo();
-      } else if (command && ((event.key.toLowerCase() === 'z' && event.shiftKey) || event.key.toLowerCase() === 'y')) {
+      } else if (canvasShortcutAllowed && command && ((event.key.toLowerCase() === 'z' && event.shiftKey) || event.key.toLowerCase() === 'y')) {
         event.preventDefault();
         redo();
       } else if (command && event.shiftKey && event.key.toLowerCase() === 'e') {
         event.preventDefault();
         exportMarkdown();
+      } else if (canvasShortcutAllowed && command && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        duplicate();
       } else if (canvasShortcutAllowed && command && event.key.toLowerCase() === 'a') {
         event.preventDefault();
         selectAll();
@@ -751,7 +851,7 @@ function FlowSketchApp() {
       } else if (canvasShortcutAllowed && activeCanvasNodeId && event.key === 'Enter') {
         event.preventDefault();
         addSiblingStage(activeCanvasNodeId);
-      } else if (canvasShortcutAllowed && activeCanvasNodeId && event.key === 'Tab') {
+      } else if (canvasShortcutAllowed && activeCanvasNodeId && !event.shiftKey && event.key === 'Tab') {
         event.preventDefault();
         addChildStage(activeCanvasNodeId);
       } else if (canvasShortcutAllowed && (event.key === 'Delete' || event.key === 'Backspace')) {
@@ -761,7 +861,7 @@ function FlowSketchApp() {
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [addChildStage, addSiblingStage, clearSelection, deleteSelection, exportMarkdown, handleSave, reactFlow, redo, selectAll, selectedNodeId, undo]);
+  }, [addChildStage, addSiblingStage, clearSelection, deleteSelection, exportMarkdown, handleSave, reactFlow, redo, selectAll, selectedNodeId, undo, duplicate]);
 
   return (
     <div className={`app-shell${isConnecting ? ' is-connecting' : ''}${hasMultiSelection ? ' has-multi-selection' : ''}`}>
@@ -794,6 +894,8 @@ function FlowSketchApp() {
           <button className="tool-button icon-only" onClick={undo} disabled={!undoStack.length} aria-label="撤销" title="撤销（⌘Z）"><Icon name="undo" /></button>
           <button className="tool-button icon-only" onClick={redo} disabled={!redoStack.length} aria-label="重做" title="重做（⇧⌘Z）"><Icon name="redo" /></button>
           <span className="topbar__divider" />
+          <label className="sr-only" htmlFor="export-scale">PNG 导出倍率</label>
+          <select id="export-scale" value={imageScale} onChange={(event) => setImageScale(Number(event.target.value))} title="PNG 导出倍率"><option value={1}>PNG 1×</option><option value={2}>PNG 2×</option><option value={3}>PNG 3×</option></select>
           <button className="tool-button" onClick={() => exportImage('png')} disabled={exporting}><Icon name="image" />PNG</button>
           <button className="tool-button" onClick={() => exportImage('svg')} disabled={exporting}>SVG</button>
           <button className="primary-button" onClick={exportMarkdown}><Icon name="download" />导出 Markdown</button>
@@ -822,11 +924,17 @@ function FlowSketchApp() {
           </div>
           <div className="palette-section">
             <span className="palette-section__label">画布操作</span>
+            <label htmlFor="flow-direction" className="field-label">流程方向</label>
+            <select id="flow-direction" value={flowDocument.direction || 'LR'} onChange={(event) => commit((document) => layoutDocument({ ...document, direction: event.target.value as 'LR' | 'TB' }))}><option value="LR">从左到右</option><option value="TB">从上到下</option></select>
             <button className="secondary-button wide" onClick={organizeLayout}><Icon name="layout" />自动整理布局</button>
+          </div>
+          <div className="palette-section">
+            <button className="secondary-button wide" onClick={() => { setShowChecks(true); setStatus(flowIssues.length ? `发现 ${flowIssues.length} 项待确认` : '流程检查通过'); }}>检查流程{flowIssues.length ? `（${flowIssues.length}）` : ''}</button>
+            <label className="field-label"><input type="checkbox" checked={transparentExport} onChange={(event) => setTransparentExport(event.target.checked)} />图片透明背景</label>
           </div>
           <div className="palette-tip">
             <strong>连接阶段</strong>
-            <p>选中节点后连接点才会出现。从任意点位拖向目标点位；同一水平线会自动使用相向侧连接。</p>
+            <p>选中节点后连接点才会出现。从任意点位拖向目标点位；拖动连接点会固定点位；面板创建的连线会自动选择相向点位。</p>
           </div>
         </aside>
 
@@ -872,6 +980,10 @@ function FlowSketchApp() {
               }, 0);
             }}
             onConnect={handleConnect}
+            isValidConnection={(connection) => !connectionProblem(documentRef.current.nodes, documentRef.current.edges, connection.source, connection.target, reconnectingEdgeIdRef.current)}
+            onReconnect={handleReconnect}
+            onReconnectStart={(_event, edge) => { reconnectingEdgeIdRef.current = edge.id; setIsConnecting(true); }}
+            onReconnectEnd={() => { reconnectingEdgeIdRef.current = undefined; setIsConnecting(false); }}
             onConnectStart={(_event, origin) => {
               connectionOriginRef.current = origin;
               setIsConnecting(true);
@@ -950,6 +1062,11 @@ function FlowSketchApp() {
         </section>
 
         <aside className="inspector" aria-label="属性面板">
+          <details className="flow-check" open={showChecks} onToggle={(event) => setShowChecks(event.currentTarget.open)}>
+            <summary>流程检查 · {flowIssues.length ? `${flowIssues.length} 项待确认` : '通过'}</summary>
+            <p>检查用于发现遗漏，不会阻止草稿保存或导出。允许有出口的回路和多个开始、结束节点。</p>
+            {flowIssues.length ? <ul>{flowIssues.map((issue, index) => <li key={`${issue.code}-${issue.nodeId || issue.edgeId || index}`}>{issue.nodeId || issue.edgeId ? <button type="button" onClick={() => focusIssue(issue)}>{issue.message}</button> : issue.message}</li>)}</ul> : <p>节点连接、判断分支和流程出口检查通过。</p>}
+          </details>
           <div className="panel-heading">
             <span>{hasMultiSelection ? '多选操作' : selectedNode ? '阶段设置' : selectedEdge ? '连线设置' : '流程概览'}</span>
             <small>{hasMultiSelection ? `已选择 ${selectedElementCount} 个元素` : selectedNode || selectedEdge ? '已选择' : '选择画布元素进行编辑'}</small>
@@ -966,6 +1083,10 @@ function FlowSketchApp() {
               <div className="multi-selection-stats" aria-label={`${selectedNodes.length} 个阶段，${selectedEdges.length} 条连线`}>
                 <div><strong>{selectedNodes.length}</strong><span>阶段</span></div>
                 <div><strong>{selectedEdges.length}</strong><span>连线</span></div>
+              </div>
+              <div className="edit-actions">
+                <button className="secondary-button" onClick={duplicate} disabled={!selectedNodes.length}>复制所选</button>
+                {(['left', 'center', 'top', 'middle', 'horizontal', 'vertical'] as Alignment[]).map((mode, index) => <button key={mode} className="secondary-button" disabled={selectedNodes.length < (index > 3 ? 3 : 2)} onClick={() => align(mode)}>{['左对齐', '水平居中', '顶对齐', '垂直居中', '水平等距', '垂直等距'][index]}</button>)}
               </div>
               <div className="multi-selection-guide">
                 <strong>整体移动</strong>
@@ -988,6 +1109,7 @@ function FlowSketchApp() {
                 <span>{STAGE_OPTIONS.find((item) => item.kind === nodeDraft.kind)?.label}</span>
                 <small>#{selectedNode.id.slice(-6)}</small>
               </div>
+              <button type="button" className="secondary-button wide" onClick={duplicate}>复制阶段（⌘/Ctrl + D）</button>
               <label className="field-label" htmlFor="stage-kind">阶段类型</label>
               <select id="stage-kind" value={nodeDraft.kind} onChange={(event) => setNodeDraft((draft) => ({ ...draft, kind: event.target.value as StageKind }))}>
                 {STAGE_OPTIONS.map((item) => <option key={item.kind} value={item.kind}>{item.label}</option>)}
@@ -1031,9 +1153,9 @@ function FlowSketchApp() {
                     </button>
                   </div>
                 ) : (
-                  <p className="field-help">当前没有可连接的目标阶段；重复连线会自动排除。</p>
+                  <p className="field-help">结束节点不能发出连线；开始节点和已有关系会从目标列表中排除。</p>
                 )}
-                <p className="field-help">也可以从节点任一点位拖向目标；同一水平线会自动优化为左右相向连接。</p>
+                <p className="field-help">从画布点位拖动会固定连接点；此处创建的连线会自动选择点位。</p>
               </section>
               <div className="form-actions">
                 <button type="button" className="danger-button" onClick={deleteSelection}><Icon name="trash" />删除</button>
@@ -1043,9 +1165,35 @@ function FlowSketchApp() {
           ) : selectedEdge ? (
             <form className="inspector-form" onSubmit={(event) => { event.preventDefault(); updateSelectedEdge(); }}>
               <div className="selection-card"><span className="edge-preview" />流程连线<small>#{selectedEdge.id.slice(-6)}</small></div>
+              <button type="button" className="secondary-button wide" onClick={insertStage}>在线上插入处理阶段</button>
+              {(['source', 'target'] as const).map((role) => <div key={role}>
+                <label className="field-label" htmlFor={`edge-${role}`}>{role === 'source' ? '起点阶段' : '终点阶段'}</label>
+                <select id={`edge-${role}`} value={edgeSettings[role]} onChange={(event) => setEdgeSettings((draft) => ({ ...draft, [role]: event.target.value }))}>{flowDocument.nodes.map((node) => <option key={node.id} value={node.id}>{node.data.title}</option>)}</select>
+              </div>)}
+              <label className="field-label" htmlFor="edge-port-mode">连接点方式</label>
+              <select id="edge-port-mode" value={edgeSettings.portMode} onChange={(event) => setEdgeSettings((draft) => ({ ...draft, portMode: event.target.value as 'auto' | 'fixed' }))}><option value="auto">自动选择点位</option><option value="fixed">固定指定点位</option></select>
+              {edgeSettings.portMode === 'fixed' && (['source', 'target'] as const).map((role) => <div key={role}>
+                <label className="field-label" htmlFor={`edge-${role}-port`}>{role === 'source' ? '起点连接点' : '终点连接点'}</label>
+                <select id={`edge-${role}-port`} value={flowDocument.nodes.find((node) => node.id === edgeSettings[role])?.data.kind === 'decision' ? edgeSettings[`${role}Handle`].replace('top-right', 'top-left').replace('bottom-right', 'bottom-left') : edgeSettings[`${role}Handle`]} onChange={(event) => setEdgeSettings((draft) => ({ ...draft, [`${role}Handle`]: event.target.value }))}>{HANDLE_OPTIONS.map((handle, index) => { const decision = flowDocument.nodes.find((node) => node.id === edgeSettings[role])?.data.kind === 'decision'; return decision && (handle === 'top-right' || handle === 'bottom-right') ? null : <option key={handle} value={`${role}-${handle}`}>{decision && handle === 'top-left' ? '上方顶点' : decision && handle === 'bottom-left' ? '下方顶点' : HANDLE_LABELS[index]}</option>; })}</select>
+              </div>)}
+
               <label className="field-label" htmlFor="edge-label">条件或说明</label>
               <input id="edge-label" value={edgeDraft} maxLength={120} placeholder="例如：通过、未通过" onChange={(event) => setEdgeDraft(event.target.value)} />
-              <p className="field-help">该文字会显示在线条中部，并同步写入 Mermaid 流程图。也可双击线条快速编辑。</p>
+              <p className="field-help">条件说明会同步进入 Mermaid。可拖动已选连线端点重新连接，也可在上方选择起点和终点。</p>
+              <label className="field-label" htmlFor="edge-label-position">标签位置</label>
+              <input id="edge-label-position" type="range" min="0" max="100" value={(edgeSettings.labelPosition ?? 0.5) * 100} onChange={(event) => setEdgeSettings((draft) => ({ ...draft, labelPosition: Number(event.target.value) / 100 }))} />
+              <div className="route-point-row">{(['x', 'y'] as const).map((axis) => <label key={axis}>标签{axis === 'x' ? '水平' : '垂直'}偏移<input aria-label={`标签${axis === 'x' ? '水平' : '垂直'}偏移`} type="number" min="-2000" max="2000" value={edgeSettings.labelOffset?.[axis] || 0} onChange={(event) => setEdgeSettings((draft) => ({ ...draft, labelOffset: { x: draft.labelOffset?.x || 0, y: draft.labelOffset?.y || 0, [axis]: Math.max(-2000, Math.min(2000, Number(event.target.value))) } }))} /></label>)}</div>
+              <button type="button" className="secondary-button wide" onClick={() => setEdgeSettings((draft) => ({ ...draft, labelPosition: undefined, labelOffset: undefined }))}>自动安排标签</button>
+              <label className="field-label">固定路径折点</label>
+              <p className="field-help">折点按画布坐标依次经过，可用于指定回路通道。固定路径由你控制，可能穿过节点；清空折点可恢复自动避障。</p>
+              {edgeSettings.waypoints.map((point, index) => <div className="route-point-row" key={index}>
+                {(['x', 'y'] as const).map((axis) => <label key={axis}>{axis.toUpperCase()}<input aria-label={`第 ${index + 1} 个折点 ${axis.toUpperCase()}`} type="number" value={point[axis]} onChange={(event) => setEdgeSettings((draft) => ({ ...draft, waypoints: draft.waypoints.map((item, pointIndex) => pointIndex === index ? { ...item, [axis]: Number(event.target.value) } : item) }))} /></label>)}
+                <button type="button" className="secondary-button" aria-label={`删除第 ${index + 1} 个折点`} onClick={() => setEdgeSettings((draft) => ({ ...draft, waypoints: draft.waypoints.filter((_, pointIndex) => pointIndex !== index) }))}>×</button>
+              </div>)}
+              <div className="edit-actions">
+                <button type="button" className="secondary-button" disabled={edgeSettings.waypoints.length >= 50} onClick={() => { const route = routedEdges.find((edge) => edge.id === selectedEdge.id)?.data?.route || []; const point = route.at(Math.floor(route.length / 2)) || { x: 300, y: 300 }; setEdgeSettings((draft) => ({ ...draft, waypoints: [...draft.waypoints, { ...point }] })); }}>添加折点</button>
+                <button type="button" className="secondary-button" disabled={!edgeSettings.waypoints.length} onClick={() => setEdgeSettings((draft) => ({ ...draft, waypoints: [] }))}>恢复自动避障</button>
+              </div>
               <div className="form-actions">
                 <button type="button" className="danger-button" onClick={deleteSelection}><Icon name="trash" />删除</button>
                 <button type="submit" className="primary-button">应用修改</button>

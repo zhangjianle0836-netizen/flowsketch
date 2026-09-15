@@ -76,7 +76,7 @@ describe('routeDiagramEdges', () => {
     expect(updated.routes.get('right-edge')).not.toEqual(initial.routes.get('right-edge'));
   });
 
-  it('keeps an unrelated edge stable when a moved node crosses its route', () => {
+  it('re-routes a blocked edge after a non-drag position update', () => {
     const nodes = [node('source', 0, 100), node('target', 560, 100), node('moving', 260, 320)];
     const edges: FlowEdge[] = [{
       id: 'edge',
@@ -91,7 +91,7 @@ describe('routeDiagramEdges', () => {
       : item);
     const updated = updateDiagramRoutes(movedNodes, edges, initial);
 
-    expect(updated.routes.get('edge')).toBe(initial.routes.get('edge'));
+    expect(updated.routes.get('edge')).not.toEqual(initial.routes.get('edge'));
   });
 
   it('re-routes a blocked unrelated edge once dragging has finished', () => {

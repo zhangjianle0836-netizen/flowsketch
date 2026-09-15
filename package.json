@@ -1,18 +1,24 @@
 {
   "name": "flowcanvas-studio",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "流绘：专注流程图绘制、阶段备注维护与 Markdown 文档导出的桌面工具",
   "main": "main.js",
   "scripts": {
     "dev": "vite",
     "start": "npm run build && electron .",
     "build": "tsc --noEmit && vite build",
-    "test": "vitest run",
+    "test": "vitest run --maxWorkers=2",
     "pack:mac": "npm run build && electron-builder --mac --arm64",
     "pack:mac:signed": "bash scripts/package-mac-arm64.sh",
-    "pack:win": "npm run build && electron-builder --win --x64"
+    "pack:win": "npm run build && electron-builder --win --x64",
+    "test:desktop": "node scripts/verify-flow-improvements.mjs"
   },
-  "keywords": ["flowchart", "markdown", "electron", "react"],
+  "keywords": [
+    "flowchart",
+    "markdown",
+    "electron",
+    "react"
+  ],
   "author": "FlowSketch",
   "license": "MIT",
   "dependencies": {
@@ -37,8 +43,18 @@
     "appId": "com.flowcanvas.studio",
     "productName": "流绘 FlowSketch",
     "asar": true,
-    "files": ["main.js", "preload.js", "dist/**/*", "build/icon.png", "THIRD_PARTY_NOTICES.md", "package.json"],
-    "directories": { "output": "release", "buildResources": "build" },
+    "files": [
+      "main.js",
+      "preload.js",
+      "dist/**/*",
+      "build/icon.png",
+      "THIRD_PARTY_NOTICES.md",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
@@ -47,11 +63,25 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "type": "distribution",
-      "target": [{ "target": "dmg", "arch": ["arm64"] }]
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
     },
     "win": {
       "icon": "build/icon.png",
-      "target": [{ "target": "nsis", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     }
   }
 }

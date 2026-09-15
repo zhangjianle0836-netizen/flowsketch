@@ -18,7 +18,7 @@ type PortName = keyof typeof PORTS;
 function nodeSize(node: StageNode) {
   return {
     width: node.measured?.width || node.width || 210,
-    height: node.measured?.height || node.height || 88
+    height: node.measured?.height || node.height || (node.data.kind === 'decision' ? 140 : 88)
   };
 }
 
@@ -45,7 +45,7 @@ function addShape(avoid: AvoidModule, router: AvoidRouter, node: StageNode) {
     const pin = new avoid.ShapeConnectionPin(
       shape,
       port.classId,
-      port.x,
+      node.data.kind === 'decision' && (port.y === 0 || port.y === 1) ? 0.5 : port.x,
       port.y,
       true,
       0,
@@ -67,7 +67,7 @@ function configureRouter(avoid: AvoidModule, router: AvoidRouter) {
   router.setRoutingParameter(parameter.reverseDirectionPenalty, 500);
 
   const option = avoid.RoutingOption;
-  router.setRoutingOption(option.nudgeOrthogonalSegmentsConnectedToShapes, true);
+  router.setRoutingOption(option.nudgeOrthogonalSegmentsConnectedToShapes, false);
   router.setRoutingOption(option.penaliseOrthogonalSharedPathsAtConnEnds, true);
   router.setRoutingOption(option.nudgeOrthogonalTouchingColinearSegments, true);
   router.setRoutingOption(option.performUnifyingNudgingPreprocessingStep, true);

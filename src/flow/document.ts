@@ -1,3 +1,4 @@
+import { layoutFlow } from './layout';
 import type { FlowDocument, FlowEdge, StageData, StageKind, StageNode } from '../types';
 
 const STAGE_KINDS: StageKind[] = ['start', 'process', 'decision', 'end'];
@@ -85,6 +86,15 @@ export function parseFlowDocument(input: unknown): FlowDocument {
     edgeIds.add(id);
     const label = text(raw.label, '', 120);
     const condition = isRecord(raw.data) ? text(raw.data.condition, '', 120) : '';
+    const data = isRecord(raw.data) ? raw.data : {};
+    const waypoints = Array.isArray(data.waypoints) ? data.waypoints.slice(0, 50).map((point) => {
+      if (!isRecord(point) || typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error(`第 ${index + 1} 条连线折点无效`);
+      return { x: point.x, y: point.y };
+    }) : undefined;
+    const labelOffset = isRecord(data.labelOffset) && typeof data.labelOffset.x === 'number' && typeof data.labelOffset.y === 'number' && Number.isFinite(data.labelOffset.x) && Number.isFinite(data.labelOffset.y)
+      ? { x: Math.max(-2000, Math.min(2000, data.labelOffset.x)), y: Math.max(-2000, Math.min(2000, data.labelOffset.y)) } : undefined;
+    const labelPosition = typeof data.labelPosition === 'number' && Number.isFinite(data.labelPosition) ? Math.max(0, Math.min(1, data.labelPosition)) : undefined;
+    const portMode = data.portMode === 'fixed' || data.portMode === 'auto' ? data.portMode : undefined;
     return {
       id,
       source,
@@ -93,7 +103,7 @@ export function parseFlowDocument(input: unknown): FlowDocument {
       ...(sourceHandle ? { sourceHandle } : {}),
       ...(targetHandle ? { targetHandle } : {}),
       ...(label ? { label } : {}),
-      ...(condition ? { data: { condition } } : {})
+      ...((condition || portMode || waypoints?.length || labelPosition !== undefined || labelOffset) ? { data: { ...(condition ? { condition } : {}), ...(portMode ? { portMode } : {}), ...(waypoints?.length ? { waypoints } : {}), ...(labelPosition !== undefined ? { labelPosition } : {}), ...(labelOffset ? { labelOffset } : {}) } } : {})
     };
   });
 
@@ -104,6 +114,7 @@ export function parseFlowDocument(input: unknown): FlowDocument {
   return {
     version: 1,
     title: text(input.title, '未命名流程', 200) || '未命名流程',
+    ...(input.direction === 'TB' || input.direction === 'LR' ? { direction: input.direction } : {}),
     nodes,
     edges,
     viewport,
@@ -112,39 +123,4 @@ export function parseFlowDocument(input: unknown): FlowDocument {
   };
 }
 
-export function layoutDocument(document: FlowDocument): FlowDocument {
-  const incoming = new Map(document.nodes.map((node) => [node.id, 0]));
-  const outgoing = new Map(document.nodes.map((node) => [node.id, [] as string[]]));
-  document.edges.forEach((edge) => {
-    incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
-    outgoing.get(edge.source)?.push(edge.target);
-  });
-
-  const ranks = new Map<string, number>();
-  const queue = document.nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id);
-  if (!queue.length && document.nodes[0]) queue.push(document.nodes[0].id);
-  queue.forEach((id) => ranks.set(id, 0));
-  for (let index = 0; index < queue.length; index += 1) {
-    const id = queue[index];
-    for (const target of outgoing.get(id) || []) {
-      const nextRank = Math.max(ranks.get(target) || 0, (ranks.get(id) || 0) + 1);
-      ranks.set(target, nextRank);
-      if (!queue.includes(target)) queue.push(target);
-    }
-  }
-  document.nodes.forEach((node) => {
-    if (!ranks.has(node.id)) ranks.set(node.id, ranks.size);
-  });
-  const grouped = new Map<number, StageNode[]>();
-  document.nodes.forEach((node) => {
-    const rank = ranks.get(node.id) || 0;
-    grouped.set(rank, [...(grouped.get(rank) || []), node]);
-  });
-  const nodes = document.nodes.map((node) => {
-    const rank = ranks.get(node.id) || 0;
-    const group = grouped.get(rank) || [];
-    const row = group.findIndex((item) => item.id === node.id);
-    return { ...node, position: { x: 100 + rank * 300, y: 100 + row * 150 } };
-  });
-  return { ...document, nodes, updatedAt: new Date().toISOString() };
-}
+export const layoutDocument = layoutFlow;

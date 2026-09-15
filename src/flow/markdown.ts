@@ -26,8 +26,11 @@ function markdownNotes(value: string): string {
   return value.replace(/</g, '&lt;').replace(/>/g, '&gt;').trim();
 }
 
-function nodeExpression(index: number, title: string, kind: StageKind): string {
-  const id = `N${index + 1}`;
+export function mermaidNodeId(id: string): string {
+  return `N_${Array.from(new TextEncoder().encode(id), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function nodeExpression(id: string, title: string, kind: StageKind): string {
   const label = mermaidText(title) || '未命名阶段';
   if (kind === 'start' || kind === 'end') return `${id}(["${label}"])`;
   if (kind === 'decision') return `${id}{"${label}"}`;
@@ -70,18 +73,18 @@ export function exportFlowToMarkdown(document: FlowDocument): string {
     '## 流程图',
     '',
     '```mermaid',
-    'flowchart LR'
+    `flowchart ${document.direction || 'LR'}`
   ];
 
-  nodes.forEach((node, index) => lines.push(`  ${nodeExpression(index, node.data.title, node.data.kind)}`));
+  nodes.forEach((node, index) => lines.push(`  ${nodeExpression(mermaidNodeId(node.id), node.data.title, node.data.kind)}`));
   document.edges.forEach((edge) => {
     const source = indexById.get(edge.source);
     const target = indexById.get(edge.target);
     if (source === undefined || target === undefined) return;
     const label = typeof edge.label === 'string' ? mermaidText(edge.label) : '';
-    lines.push(label ? `  N${source + 1} -->|${label}| N${target + 1}` : `  N${source + 1} --> N${target + 1}`);
+    lines.push(label ? `  ${mermaidNodeId(nodes[source].id)} -->|${label}| ${mermaidNodeId(nodes[target].id)}` : `  ${mermaidNodeId(nodes[source].id)} --> ${mermaidNodeId(nodes[target].id)}`);
   });
-  lines.push('```', '', '## 阶段说明', '');
+  lines.push('```', '', '> Mermaid 会根据流程方向重新排版；需要保留画布布局时，请使用 PNG 或 SVG。', '', '## 阶段说明', '');
 
   nodes.forEach((node, index) => {
     lines.push(`### ${index + 1}. ${markdownText(node.data.title) || '未命名阶段'}`, '', `- 类型：${KIND_LABELS[node.data.kind]}`, '');

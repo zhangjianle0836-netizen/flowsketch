@@ -528,3 +528,48 @@ kbd { min-width: 23px; display: inline-flex; justify-content: center; padding: 3
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
+
+/* Flow symbols retain text labels and focus indicators in both themes. */
+.stage-node { border-radius: 6px; box-shadow: 0 2px 8px rgba(0, 0, 0, .06); backdrop-filter: none; }
+.stage-node--start, .stage-node--end { border-radius: 999px; }
+.stage-node__title { white-space: normal; overflow: visible; overflow-wrap: anywhere; text-overflow: clip; line-height: 1.4; text-align: center; }
+.stage-node__kind, .stage-node__note { justify-content: center; }
+.stage-node--decision { min-height: 140px; padding: 28px 42px; border: 0; background: transparent; box-shadow: none; display: flex; flex-direction: column; justify-content: center; }
+.stage-node--decision:hover, .stage-node--decision.is-selected { background: transparent; box-shadow: none; }
+.stage-node__shape { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.stage-node__shape polygon { fill: var(--panel); stroke: var(--amber); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+.stage-node--decision.is-selected .stage-node__shape polygon { stroke: var(--blue); stroke-width: 3px; }
+.stage-node--decision .stage-node__kind, .stage-node--decision .stage-node__title, .stage-node--decision .stage-node__title-input, .stage-node--decision .stage-node__note { position: relative; }
+.routed-edge-label { max-width: 256px; white-space: normal; overflow-wrap: anywhere; text-align: center; }
+.edit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 12px 0; }
+.edit-actions button { min-height: 34px; font-size: 11px; }
+.palette-section select { width: 100%; margin: 8px 0; min-height: 34px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.flow-check { margin: 12px 15px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); }
+.flow-check summary { cursor: pointer; font-size: 12px; font-weight: 650; }
+.flow-check p { font-size: 11px; color: var(--text-soft); line-height: 1.5; }
+.flow-check ul { padding: 0; list-style: none; max-height: 230px; overflow-y: auto; }
+.flow-check li { margin: 6px 0; font-size: 11px; }
+.flow-check li button { width: 100%; padding: 7px; border: 1px solid var(--line); border-radius: 5px; text-align: left; color: var(--text); background: var(--panel); line-height: 1.5; }
+.route-point-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 5px; margin: 7px 0; align-items: end; }
+.route-point-row label { font-size: 10px; color: var(--text-soft); }
+.route-point-row button { min-height: 38px; }
+.inspector input[type="range"] { padding: 0; }
+.topbar__right select { max-width: 100px; min-height: 32px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.topbar { gap: 10px; }
+.document-title { min-width: 120px; }
+
+.palette { overflow-y: auto; }
+.palette-tip { position: static; margin: 12px; }
+.routed-edge-label.is-selected { pointer-events: auto; cursor: move; touch-action: none; }
+.route-waypoint { fill: var(--panel); stroke: var(--blue); stroke-width: 2px; pointer-events: all; cursor: move; touch-action: none; }
+summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+
+/* Outline borders keep the model's fractional ports and actual handle coordinates identical. */
+.stage-node { border: 0; outline: 1px solid color-mix(in srgb, var(--node-accent) 65%, var(--line-strong)); }
+.stage-node:hover { outline-color: var(--node-accent); }
+.stage-node.is-selected { outline-color: var(--blue); }
+.stage-node--decision, .stage-node--decision:hover, .stage-node--decision.is-selected { outline: none; }
+.routed-edge-label { font-size: 12px; line-height: 18px; padding: 4px 8px; border-radius: 4px; }
+
+.stage-node--decision .stage-handle--top-right, .stage-node--decision .stage-handle--bottom-right { opacity: 0 !important; pointer-events: none !important; }
+.react-flow__edgelabel-renderer { z-index: 4; }

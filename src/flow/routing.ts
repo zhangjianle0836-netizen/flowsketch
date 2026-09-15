@@ -33,7 +33,7 @@ const EPSILON = 0.01;
 function nodeSize(node: StageNode) {
   return {
     width: node.measured?.width || node.width || DEFAULT_NODE_WIDTH,
-    height: node.measured?.height || node.height || DEFAULT_NODE_HEIGHT
+    height: node.measured?.height || node.height || (node.data.kind === 'decision' ? 140 : DEFAULT_NODE_HEIGHT)
   };
 }
 
@@ -43,10 +43,13 @@ function portName(handleId: string | null | undefined, fallback: string) {
 
 function portPosition(node: StageNode, handleId: string | null | undefined, fallback: string) {
   const { width, height } = nodeSize(node);
-  const port = portName(handleId, fallback);
+  const rawPort = portName(handleId, fallback);
+  const port = node.data.kind === 'decision' && rawPort.startsWith('top') ? 'decision-top' : node.data.kind === 'decision' && rawPort.startsWith('bottom') ? 'decision-bottom' : rawPort;
   const left = node.position.x;
   const top = node.position.y;
   switch (port) {
+    case 'decision-top': return { point: { x: left + width / 2, y: top }, position: Position.Top };
+    case 'decision-bottom': return { point: { x: left + width / 2, y: top + height }, position: Position.Bottom };
     case 'left': return { point: { x: left, y: top + height / 2 }, position: Position.Left };
     case 'right': return { point: { x: left + width, y: top + height / 2 }, position: Position.Right };
     case 'top-left': return { point: { x: left + width * 0.34, y: top }, position: Position.Top };
@@ -90,7 +93,7 @@ function sameGeometry(first: NodeGeometry | undefined, second: NodeGeometry) {
 }
 
 function edgeGeometry(edge: FlowEdge) {
-  return [edge.source, edge.sourceHandle || '', edge.target, edge.targetHandle || ''].join('\u0000');
+  return [edge.source, edge.sourceHandle || '', edge.target, edge.targetHandle || '', JSON.stringify(edge.data?.waypoints || [])].join('\u0000');
 }
 
 function unique(values: number[]) {
@@ -202,12 +205,47 @@ function chooseRoute(candidates: RoutePoint[][], rects: RouteRect[], existingRou
   }, null as { points: RoutePoint[]; score: number } | null)?.points || candidates[0];
 }
 
+/** Async routes may only replace a route when they still match the current geometry. */
+export function validEdgeRoute(nodes: StageNode[], edge: FlowEdge, points: RoutePoint[]): boolean {
+  const source = nodes.find((node) => node.id === edge.source);
+  const target = nodes.find((node) => node.id === edge.target);
+  if (!source || !target || points.length < 2) return false;
+  const start = portPosition(source, edge.sourceHandle, 'right').point;
+  const end = portPosition(target, edge.targetHandle, 'left').point;
+  const close = (first: RoutePoint, second: RoutePoint) => Math.abs(first.x - second.x) < 0.75 && Math.abs(first.y - second.y) < 0.75;
+  return close(points[0], start) && close(points.at(-1)!, end) && points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) &&
+    points.slice(1).every((point, index) => Math.abs(point.x - points[index].x) < EPSILON || Math.abs(point.y - points[index].y) < EPSILON) &&
+    !routeIntersectsNodes(points, edge, nodes, new Set(nodes.map((node) => node.id)));
+}
+
+/** Fixed waypoints are user constraints; they deliberately bypass automatic avoidance. */
+export function manualEdgeRoute(nodes: StageNode[], edge: FlowEdge): RoutePoint[] | undefined {
+  if (!edge.data?.waypoints?.length) return undefined;
+  const sourceNode = nodes.find((node) => node.id === edge.source);
+  const targetNode = nodes.find((node) => node.id === edge.target);
+  if (!sourceNode || !targetNode) return undefined;
+  const source = portPosition(sourceNode, edge.sourceHandle, 'right');
+  const target = portPosition(targetNode, edge.targetHandle, 'left');
+  const anchors = [moveOut(source.point, source.position), ...edge.data.waypoints, moveOut(target.point, target.position)];
+  const points = [source.point, anchors[0]];
+  for (let index = 1; index < anchors.length; index += 1) {
+    const previous = anchors[index - 1];
+    const next = anchors[index];
+    if (previous.x !== next.x && previous.y !== next.y) points.push({ x: next.x, y: previous.y });
+    points.push(next);
+  }
+  points.push(target.point);
+  return collapse(points);
+}
+
 export function routeDiagramEdges(nodes: StageNode[], edges: FlowEdge[]) {
   const nodeLookup = new Map(nodes.map((node) => [node.id, node]));
   const routes = new Map<string, RoutePoint[]>();
   const existingRoutes: RoutePoint[][] = [];
 
   for (const edge of edges) {
+    const manual = manualEdgeRoute(nodes, edge);
+    if (manual) { routes.set(edge.id, manual); existingRoutes.push(manual); continue; }
     const sourceNode = nodeLookup.get(edge.source);
     const targetNode = nodeLookup.get(edge.target);
     if (!sourceNode || !targetNode) continue;
@@ -277,7 +315,7 @@ export function updateDiagramRoutes(
   const addedNodeIds = new Set(
     nodes.filter((node) => !previous.nodeGeometry.has(node.id)).map((node) => node.id)
   );
-  const obstacleIds = new Set([...settledNodeIds, ...addedNodeIds]);
+  const obstacleIds = new Set([...settledNodeIds, ...addedNodeIds, ...(!isDragging ? changedNodes : [])]);
   const dirtyEdges: FlowEdge[] = [];
 
   for (const edge of edges) {
@@ -327,9 +365,9 @@ export function orthogonalRoutePath(points: RoutePoint[]) {
   );
 }
 
-export function routeMidpoint(points: RoutePoint[]) {
+export function routeMidpoint(points: RoutePoint[], fraction = 0.5) {
   const total = routeLength(points);
-  let remaining = total / 2;
+  let remaining = total * Math.max(0, Math.min(1, fraction));
   for (const segment of segments(points)) {
     const length = Math.abs(segment.to.x - segment.from.x) + Math.abs(segment.to.y - segment.from.y);
     if (remaining <= length) {

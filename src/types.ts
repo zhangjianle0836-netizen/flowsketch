@@ -10,11 +10,12 @@ export type StageData = {
 };
 
 export type StageNode = Node<StageData, 'stage'>;
-export type FlowEdge = Edge<{ condition?: string; route?: RoutePoint[] }>;
+export type FlowEdge = Edge<{ condition?: string; route?: RoutePoint[]; portMode?: 'auto' | 'fixed'; waypoints?: RoutePoint[]; labelPosition?: number; labelOffset?: RoutePoint }>;
 
 export type FlowDocument = {
   version: 1;
   title: string;
+  direction?: 'LR' | 'TB';
   nodes: StageNode[];
   edges: FlowEdge[];
   viewport: Viewport;

@@ -11,11 +11,12 @@ type ConnectionLike = {
   target: string | null;
   sourceHandle?: string | null;
   targetHandle?: string | null;
+  data?: { portMode?: 'auto' | 'fixed' };
 };
 
 function nodeBounds(node: StageNode) {
   const width = node.measured?.width || node.width || 210;
-  const height = node.measured?.height || node.height || 88;
+  const height = node.measured?.height || node.height || (node.data.kind === 'decision' ? 140 : 88);
   return {
     centerX: node.position.x + width / 2,
     top: node.position.y,
@@ -64,6 +65,7 @@ export function optimizeConnectionHandles<T extends ConnectionLike>(
   connection: T,
   nodes: StageNode[]
 ): T {
+  if (connection.data?.portMode === 'fixed') return connection;
   const source = nodes.find((node) => node.id === connection.source);
   const target = nodes.find((node) => node.id === connection.target);
   if (!source || !target || source.id === target.id) return connection;
@@ -72,7 +74,11 @@ export function optimizeConnectionHandles<T extends ConnectionLike>(
   const targetBounds = nodeBounds(target);
   const verticalOverlap = Math.min(sourceBounds.bottom, targetBounds.bottom) -
     Math.max(sourceBounds.top, targetBounds.top);
-  if (verticalOverlap <= 0) return connection;
+  if (verticalOverlap <= 0) {
+    if (connection.data?.portMode !== 'auto') return connection;
+    const targetIsBelow = target.position.y >= source.position.y;
+    return { ...connection, sourceHandle: targetIsBelow ? 'source-bottom-left' : source.data.kind === 'decision' ? 'source-top-left' : 'source-top-right', targetHandle: targetIsBelow ? 'target-top-left' : target.data.kind === 'decision' ? 'target-bottom-left' : 'target-bottom-right' };
+  }
 
   const targetIsRight = targetBounds.centerX >= sourceBounds.centerX;
   return {

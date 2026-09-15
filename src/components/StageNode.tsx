@@ -42,6 +42,7 @@ export function StageNode({ id, data, selected }: NodeProps<StageNodeType>) {
 
   return (
     <div className={`stage-node stage-node--${data.kind}${selected ? ' is-selected' : ''}`} aria-label={`${KIND_LABELS[data.kind]}：${data.title}`}>
+      {data.kind === 'decision' && <svg className="stage-node__shape" viewBox="0 0 210 140" preserveAspectRatio="none" aria-hidden="true"><polygon points="105,1 209,70 105,139 1,70" /></svg>}
       {PORTS.flatMap((port) => ([
         <Handle
           key={`source-${port.id}`}
@@ -49,7 +50,7 @@ export function StageNode({ id, data, selected }: NodeProps<StageNodeType>) {
           type="source"
           position={port.position}
           className={handleClass('source', port.className)}
-          style={port.style}
+          style={data.kind === 'decision' && (port.position === Position.Top || port.position === Position.Bottom) ? { left: '50%' } : port.style}
           title="从此点连接"
           aria-hidden="true"
         />,
@@ -59,7 +60,7 @@ export function StageNode({ id, data, selected }: NodeProps<StageNodeType>) {
           type="target"
           position={port.position}
           className={handleClass('target', port.className)}
-          style={port.style}
+          style={data.kind === 'decision' && (port.position === Position.Top || port.position === Position.Bottom) ? { left: '50%' } : port.style}
           title="连接到此点"
           aria-hidden="true"
         />
@@ -88,12 +89,10 @@ export function StageNode({ id, data, selected }: NodeProps<StageNodeType>) {
         <button
           type="button"
           className="stage-node__title nodrag"
-          title="点击修改标题"
+          aria-label={`修改阶段名称：${data.title}`}
+          title={data.title}
           onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            setEditingTitle(true);
-          }}
+          onClick={() => setEditingTitle(true)}
         >
           {data.title}
         </button>

@@ -25,7 +25,7 @@ const FlowMiniMapContext = createContext<FlowMiniMapContextValue>({ nodes: [], e
 function nodeSize(node: StageNode) {
   return {
     width: node.measured?.width || node.width || DEFAULT_NODE_WIDTH,
-    height: node.measured?.height || node.height || DEFAULT_NODE_HEIGHT
+    height: node.measured?.height || node.height || (node.data.kind === 'decision' ? 140 : DEFAULT_NODE_HEIGHT)
   };
 }
 
@@ -88,18 +88,16 @@ function MiniMapStageNode({
           <rect x={x + 5} y={y + 3} width={Math.max(0, width - 10)} height={Math.max(0, height - 6)} rx={borderRadius} />
         </clipPath>
       </defs>
-      <rect
+      {node.data.kind === 'decision' ? <polygon
         className={`flow-minimap__node${selected ? ' is-selected' : ''}`}
-        x={x}
-        y={y}
-        width={width}
-        height={height}
-        rx={borderRadius}
-        ry={borderRadius}
-        fill={color}
-        vectorEffect="non-scaling-stroke"
-        onClick={onClick ? (event) => onClick(event, id) : undefined}
-      />
+        points={`${x + width / 2},${y} ${x + width},${y + height / 2} ${x + width / 2},${y + height} ${x},${y + height / 2}`}
+        fill={color} vectorEffect="non-scaling-stroke" onClick={onClick ? (event) => onClick(event, id) : undefined}
+      /> : <rect
+        className={`flow-minimap__node${selected ? ' is-selected' : ''}`}
+        x={x} y={y} width={width} height={height}
+        rx={node.data.kind === 'process' ? 6 : height / 2}
+        fill={color} vectorEffect="non-scaling-stroke" onClick={onClick ? (event) => onClick(event, id) : undefined}
+      />}
       <text
         className="flow-minimap__title"
         x={x + width / 2}
