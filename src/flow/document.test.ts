@@ -21,10 +21,21 @@ describe('flow document', () => {
 
   it('preserves selected connection points when reopening a document', () => {
     const document = createBlankDocument();
-    document.edges[0].sourceHandle = 'source-bottom';
-    document.edges[0].targetHandle = 'target-top';
+    document.edges[0].sourceHandle = 'source-bottom-left';
+    document.edges[0].targetHandle = 'target-top-right';
     const parsed = parseFlowDocument(JSON.parse(JSON.stringify(document)));
-    expect(parsed.edges[0].sourceHandle).toBe('source-bottom');
-    expect(parsed.edges[0].targetHandle).toBe('target-top');
+    expect(parsed.edges[0].sourceHandle).toBe('source-bottom-left');
+    expect(parsed.edges[0].targetHandle).toBe('target-top-right');
+  });
+
+  it('repairs old handle IDs and displays legacy condition labels', () => {
+    const document = createBlankDocument();
+    document.edges[0].sourceHandle = 'source-bottom';
+    document.edges[0].targetHandle = 'target-unknown';
+    document.edges[0].data = { condition: '通过', portMode: 'fixed' };
+    const parsed = parseFlowDocument(JSON.parse(JSON.stringify(document)));
+    expect(parsed.edges[0].sourceHandle).toBeUndefined();
+    expect(parsed.edges[0].targetHandle).toBeUndefined();
+    expect(parsed.edges[0].label).toBe('通过');
   });
 });

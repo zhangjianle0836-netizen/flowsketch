@@ -1,16 +1,22 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 
 const project = resolve(import.meta.dirname, '..');
+const electronBinary = createRequire(import.meta.url)('electron');
 const qaDir = await mkdtemp(join(tmpdir(), 'flowsketch-qa-'));
 const output = process.argv[2] ? resolve(process.argv[2]) : qaDir;
 await mkdir(output, { recursive: true });
 const fixturePath = join(qaDir, 'fixture.flow.json');
+const invalidFixturePath = join(qaDir, 'invalid.flow.json');
+const invalidOpenMarker = join(qaDir, 'open-invalid');
+const invalidContent = JSON.stringify({ version: 1, title: '无效工程', nodes: [{}], edges: [] });
+await writeFile(invalidFixturePath, invalidContent);
 const now = new Date().toISOString();
 const nodes = [
   ['S', '开始', 'start', 80, 200],
@@ -22,7 +28,7 @@ const nodes = [
 const edges = [['S', 'D', ''], ['D', 'A', '条件满足'], ['D', 'B', '资料不完整'], ['A', 'E', ''], ['B', 'D', '补充后重新判断']].map(([source, target, label], index) => ({ id: `e${index}`, source, target, label, data: { portMode: 'auto' } }));
 await writeFile(fixturePath, JSON.stringify({ version: 1, title: '退款审核流程', nodes, edges, viewport: { x: 0, y: 0, zoom: 1 }, createdAt: now, updatedAt: now }));
 const launcher = join(qaDir, 'launcher.cjs');
-await writeFile(launcher, `const { app, dialog } = require(${JSON.stringify(join(project, 'node_modules/electron'))});\napp.setPath('userData', ${JSON.stringify(join(qaDir, 'profile'))});\ndialog.showOpenDialog = async () => ({canceled:false,filePaths:[${JSON.stringify(fixturePath)}]});\ndialog.showSaveDialog = async (_window, options) => ({canceled:false,filePath:require('node:path').join(${JSON.stringify(output)}, options.defaultPath)});\nrequire(${JSON.stringify(join(project, 'main.js'))});\n`);
+await writeFile(launcher, `const { app, dialog } = require(${JSON.stringify(join(project, 'node_modules/electron'))});\napp.setPath('userData', ${JSON.stringify(join(qaDir, 'profile'))});\ndialog.showOpenDialog = async () => ({canceled:false,filePaths:[require('node:fs').existsSync(${JSON.stringify(invalidOpenMarker)}) ? ${JSON.stringify(invalidFixturePath)} : ${JSON.stringify(fixturePath)}]});\ndialog.showSaveDialog = async (_window, options) => ({canceled:false,filePath:require('node:path').join(${JSON.stringify(output)}, options.defaultPath)});\nrequire(${JSON.stringify(join(project, 'main.js'))});\n`);
 // Electron's runtime module must be required by name inside its process.
 await writeFile(launcher, (await readFile(launcher, 'utf8')).replace(`require(${JSON.stringify(join(project, 'node_modules/electron'))})`, "require('electron')"));
 const lease = createServer();
@@ -30,7 +36,7 @@ await new Promise((resolveListen) => lease.listen(0, '127.0.0.1', resolveListen)
 const port = lease.address().port;
 await new Promise((resolveClose) => lease.close(resolveClose));
 const expectedUrl = pathToFileURL(join(project, 'dist/index.html')).href;
-const child = spawn(join(project, 'node_modules/.bin/electron'), [launcher, `--remote-debugging-port=${port}`], { cwd: project, env: { ...process.env, RAYON_NUM_THREADS: '2', UV_THREADPOOL_SIZE: '2' }, stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(electronBinary, [launcher, `--remote-debugging-port=${port}`], { cwd: project, env: { ...process.env, RAYON_NUM_THREADS: '2', UV_THREADPOOL_SIZE: '2' }, stdio: ['ignore', 'pipe', 'pipe'] });
 let logs = '';
 child.stderr.on('data', (chunk) => { logs += chunk; });
 let socket;
@@ -76,8 +82,27 @@ try {
   await waitFor("document.querySelectorAll('.react-flow__node').length===3");
   await clickButton('打开');
   await waitFor("document.querySelectorAll('.react-flow__node').length===5");
+  await writeFile(invalidOpenMarker, '1');
+  await clickButton('打开');
+  await waitFor("document.querySelector('[role=status]').textContent.includes('第 1 个节点格式无效')");
+  await rm(invalidOpenMarker);
+  await clickButton('保存');
+  await waitFor("document.querySelector('[role=status]').textContent.includes('流程已保存')");
+  assert.equal(await readFile(invalidFixturePath, 'utf8'), invalidContent, '打开失败后不得把原流程写入无效文件');
+  const original = JSON.parse(await readFile(fixturePath, 'utf8'));
+  await evaluate(`window.flowAPI.loadRecovery().then(({session}) => Promise.all(['先写入', '后写入'].map(title => window.flowAPI.autosaveFlow({...${JSON.stringify(original)}, title}, session))))`);
+  assert.equal(JSON.parse(await readFile(fixturePath, 'utf8')).title, '后写入', '并发保存必须保留最后一次请求');
+  assert.ok(!(await readdir(qaDir)).some((name) => name.endsWith('.tmp')), '并发保存不得遗留临时文件');
+  await clickButton('保存');
+  assert.equal(JSON.parse(await readFile(fixturePath, 'utf8')).title, '退款审核流程');
   await clickButton('自动整理布局');
   await sleep(600);
+  const edgeLayer = await evaluate(`(() => {
+    const edge = document.querySelector('.react-flow__edge');
+    const node = document.querySelector('.react-flow__node');
+    return { edge: Number(edge.parentElement.style.zIndex || 0), node: Number(node.style.zIndex || 0) };
+  })()`);
+  assert.ok(edgeLayer.edge <= edgeLayer.node, '连线必须绘制在节点下方');
   assert.equal(await evaluate("document.querySelectorAll('.stage-node--decision polygon').length"), 1);
   const title = await evaluate("(() => {const element=document.querySelector('.stage-node--decision .stage-node__title');return {text:element.textContent,whiteSpace:getComputedStyle(element).whiteSpace,height:element.getBoundingClientRect().height};})()");
   assert.equal(title.whiteSpace, 'normal');
@@ -105,6 +130,7 @@ try {
   assert.ok((await readFile(join(output, '退款审核流程.md'), 'utf8')).includes('flowchart LR'));
   // Fixed handles and label settings persist through save/open.
   await selectEdge('e1');
+  assert.equal(await evaluate("Number(document.querySelector('.react-flow__edge.selected').parentElement.style.zIndex || 0)"), 0, '选中连线仍须位于节点下方');
   await waitFor("Boolean(document.getElementById('edge-port-mode'))");
   await change('edge-port-mode', 'fixed');
   await change('edge-source-port', 'source-top-left');
@@ -189,8 +215,20 @@ try {
   assert.ok(right <= 1040, `工具栏超出窗口：${right}`);
   await capture('flowsketch-minimum-window.png');
   await writeFile(join(output, '已验证工程.flow.json'), JSON.stringify(saved, null, 2));
+  await evaluate("(() => {const input=document.querySelector('.document-title input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'关闭前快照');input.dispatchEvent(new Event('input',{bubbles:true}));})()");
+  await waitFor("document.querySelector('.document-title input').value==='关闭前快照'");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'w', code: 'KeyW', modifiers: 4, windowsVirtualKeyCode: 87 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'w', code: 'KeyW', modifiers: 4, windowsVirtualKeyCode: 87 });
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (JSON.parse(await readFile(fixturePath, 'utf8')).title === '关闭前快照') break;
+    await sleep(100);
+  }
+  assert.equal(JSON.parse(await readFile(fixturePath, 'utf8')).title, '关闭前快照', '关闭窗口前必须写入最新编辑');
   console.log(JSON.stringify({ success: true, output, title, issueCount, pngBytes: png.length, svgBytes: svg.length, runtimeErrors: errors }, null, 2));
 } finally {
   socket?.close();
   child.kill('SIGTERM');
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }, 1000).unref();
 }

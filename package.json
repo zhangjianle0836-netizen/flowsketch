@@ -1,6 +1,6 @@
 {
   "name": "flowcanvas-studio",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "流绘：专注流程图绘制、阶段备注维护与 Markdown 文档导出的桌面工具",
   "main": "main.js",
   "scripts": {

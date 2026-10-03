@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { fileURLToPath } = require('node:url');
 
 const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
@@ -8,6 +9,20 @@ const APP_NAME = '流绘 FlowSketch';
 const APP_ICON_PATH = path.join(__dirname, 'build', 'icon.png');
 let mainWindow = null;
 let activeFlowPath = null;
+let documentSession = 1;
+let pendingOpen = null;
+let fileTask = Promise.resolve();
+let closingWindow = false;
+
+function queueFileTask(task) {
+  const next = fileTask.then(task);
+  fileTask = next.catch(() => undefined);
+  return next;
+}
+
+function assertCurrentSession(session) {
+  if (session !== documentSession) throw new Error('工程已切换，旧的保存请求已忽略');
+}
 
 function assertTrustedSender(event) {
   const senderUrl = event.senderFrame?.url;
@@ -45,9 +60,9 @@ function serializeDocument(document) {
 
 async function atomicWrite(filePath, content) {
   const directory = path.dirname(filePath);
-  const temporaryPath = path.join(directory, `.${path.basename(filePath)}.${process.pid}.tmp`);
-  await fs.writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
+  const temporaryPath = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   try {
+    await fs.writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
     await fs.rename(temporaryPath, filePath);
   } catch (error) {
     await fs.rm(temporaryPath, { force: true });
@@ -72,6 +87,7 @@ function updateWindowTitle(filePath) {
 }
 
 function createWindow() {
+  closingWindow = false;
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 920,
@@ -97,6 +113,11 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  mainWindow.on('close', (event) => {
+    if (closingWindow || mainWindow.webContents.isLoading()) return;
+    event.preventDefault();
+    mainWindow.webContents.send('flow:prepare-close');
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -125,41 +146,62 @@ ipcMain.handle('flow:open', async (event) => {
 
   const filePath = result.filePaths[0];
   if (!filePath.toLowerCase().endsWith('.json')) throw new Error('只能打开 JSON 流程工程');
-  const stat = await fs.stat(filePath);
-  if (stat.size > MAX_DOCUMENT_BYTES) throw new Error('流程文件超过 10 MB 限制');
-  const document = JSON.parse(await fs.readFile(filePath, 'utf8'));
-  if (!isFlowDocument(document)) throw new Error('不是有效的流绘流程工程');
-  activeFlowPath = filePath;
-  updateWindowTitle(filePath);
-  return { canceled: false, document, filePath };
+  return queueFileTask(async () => {
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_DOCUMENT_BYTES) throw new Error('流程文件超过 10 MB 限制');
+    const document = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    if (!isFlowDocument(document)) throw new Error('不是有效的流绘流程工程');
+    const requestId = randomUUID();
+    pendingOpen = { requestId, filePath };
+    return { canceled: false, document, filePath, requestId };
+  });
+});
+
+ipcMain.handle('flow:activate-open', (event, requestId) => {
+  assertTrustedSender(event);
+  return queueFileTask(async () => {
+    if (!pendingOpen || pendingOpen.requestId !== requestId) throw new Error('打开请求已失效');
+    activeFlowPath = pendingOpen.filePath;
+    pendingOpen = null;
+    documentSession += 1;
+    updateWindowTitle(activeFlowPath);
+    await fs.rm(recoveryPath(), { force: true });
+    return { session: documentSession };
+  });
 });
 
 ipcMain.handle('flow:save', async (event, payload) => {
   assertTrustedSender(event);
-  const content = serializeDocument(payload?.document);
-  let filePath = activeFlowPath;
-  if (!filePath || payload?.saveAs) {
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: '保存流程工程',
-      defaultPath: `${safeFileName(payload.document.title, '未命名流程')}.flow.json`,
-      filters: [{ name: '流绘流程工程', extensions: ['json'] }]
-    });
-    if (result.canceled || !result.filePath) return { canceled: true };
-    filePath = ensureFlowExtension(result.filePath);
-  }
-  await atomicWrite(filePath, content);
-  activeFlowPath = filePath;
-  updateWindowTitle(filePath);
-  await fs.rm(recoveryPath(), { force: true });
-  return { canceled: false, filePath };
+  return queueFileTask(async () => {
+    assertCurrentSession(payload?.session);
+    const content = serializeDocument(payload?.document);
+    let filePath = activeFlowPath;
+    if (!filePath || payload?.saveAs) {
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: '保存流程工程',
+        defaultPath: `${safeFileName(payload.document.title, '未命名流程')}.flow.json`,
+        filters: [{ name: '流绘流程工程', extensions: ['json'] }]
+      });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      filePath = ensureFlowExtension(result.filePath);
+    }
+    await atomicWrite(filePath, content);
+    activeFlowPath = filePath;
+    updateWindowTitle(filePath);
+    await fs.rm(recoveryPath(), { force: true });
+    return { canceled: false, filePath };
+  });
 });
 
-ipcMain.handle('flow:autosave', async (event, document) => {
+ipcMain.handle('flow:autosave', (event, payload) => {
   assertTrustedSender(event);
-  const content = serializeDocument(document);
-  const filePath = activeFlowPath || recoveryPath();
-  await atomicWrite(filePath, content);
-  return { filePath, isRecovery: !activeFlowPath };
+  return queueFileTask(async () => {
+    assertCurrentSession(payload?.session);
+    const content = serializeDocument(payload?.document);
+    const filePath = activeFlowPath || recoveryPath();
+    await atomicWrite(filePath, content);
+    return { filePath, isRecovery: !activeFlowPath };
+  });
 });
 
 ipcMain.handle('flow:load-recovery', async (event) => {
@@ -167,18 +209,42 @@ ipcMain.handle('flow:load-recovery', async (event) => {
   try {
     const filePath = recoveryPath();
     const document = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    return isFlowDocument(document) ? { found: true, document } : { found: false };
+    return isFlowDocument(document) ? { found: true, document, session: documentSession } : { found: false, session: documentSession };
   } catch {
-    return { found: false };
+    return { found: false, session: documentSession };
   }
 });
 
-ipcMain.handle('flow:new', async (event) => {
+ipcMain.handle('flow:new', (event) => {
   assertTrustedSender(event);
-  activeFlowPath = null;
-  updateWindowTitle(null);
-  await fs.rm(recoveryPath(), { force: true });
-  return { success: true };
+  return queueFileTask(async () => {
+    activeFlowPath = null;
+    pendingOpen = null;
+    documentSession += 1;
+    updateWindowTitle(null);
+    await fs.rm(recoveryPath(), { force: true });
+    return { success: true, session: documentSession };
+  });
+});
+
+ipcMain.on('flow:close-ready', (event, saved) => {
+  assertTrustedSender(event);
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (saved) {
+    closingWindow = true;
+    mainWindow.destroy();
+    return;
+  }
+  dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    message: '关闭前保存流程失败',
+    detail: '请检查文件权限或存储空间，然后重试。',
+    buttons: ['继续编辑', '重试保存'],
+    defaultId: 1,
+    cancelId: 0
+  }).then(({ response }) => {
+    if (response === 1 && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('flow:prepare-close');
+  });
 });
 
 ipcMain.handle('flow:export-markdown', async (event, payload) => {

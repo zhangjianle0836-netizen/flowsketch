@@ -57,32 +57,39 @@ export function orientConnectionFromOrigin(
 }
 
 /**
- * Nodes on the same horizontal level should connect through their facing sides.
- * This avoids long routes across the tops of two nodes when a top handle was
- * easier to hit during drag-and-drop.
+ * Choose facing handles for automatic connections and resolve missing handles
+ * in older files before React Flow measures the rendered edge endpoints.
  */
 export function optimizeConnectionHandles<T extends ConnectionLike>(
   connection: T,
   nodes: StageNode[]
 ): T {
-  if (connection.data?.portMode === 'fixed') return connection;
-  const source = nodes.find((node) => node.id === connection.source);
-  const target = nodes.find((node) => node.id === connection.target);
-  if (!source || !target || source.id === target.id) return connection;
+  // Older files omit handle IDs. React Flow otherwise picks the first handle
+  // (left), while both route engines assume a right-side source by default.
+  const resolved = (connection.sourceHandle && connection.targetHandle ? connection : {
+    ...connection,
+    sourceHandle: connection.sourceHandle || 'source-right',
+    targetHandle: connection.targetHandle || 'target-left'
+  }) as T;
+  if (resolved.data?.portMode === 'fixed') return resolved;
+  const source = nodes.find((node) => node.id === resolved.source);
+  const target = nodes.find((node) => node.id === resolved.target);
+  if (!source || !target || source.id === target.id) return resolved;
 
   const sourceBounds = nodeBounds(source);
   const targetBounds = nodeBounds(target);
   const verticalOverlap = Math.min(sourceBounds.bottom, targetBounds.bottom) -
     Math.max(sourceBounds.top, targetBounds.top);
   if (verticalOverlap <= 0) {
-    if (connection.data?.portMode !== 'auto') return connection;
+    const legacyAutomatic = !connection.sourceHandle && !connection.targetHandle && !connection.data?.portMode;
+    if (resolved.data?.portMode !== 'auto' && !legacyAutomatic) return resolved;
     const targetIsBelow = target.position.y >= source.position.y;
-    return { ...connection, sourceHandle: targetIsBelow ? 'source-bottom-left' : source.data.kind === 'decision' ? 'source-top-left' : 'source-top-right', targetHandle: targetIsBelow ? 'target-top-left' : target.data.kind === 'decision' ? 'target-bottom-left' : 'target-bottom-right' };
+    return { ...resolved, sourceHandle: targetIsBelow ? 'source-bottom-left' : source.data.kind === 'decision' ? 'source-top-left' : 'source-top-right', targetHandle: targetIsBelow ? 'target-top-left' : target.data.kind === 'decision' ? 'target-bottom-left' : 'target-bottom-right' };
   }
 
   const targetIsRight = targetBounds.centerX >= sourceBounds.centerX;
   return {
-    ...connection,
+    ...resolved,
     sourceHandle: targetIsRight ? 'source-right' : 'source-left',
     targetHandle: targetIsRight ? 'target-left' : 'target-right'
   };

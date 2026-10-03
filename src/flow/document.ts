@@ -2,6 +2,12 @@ import { layoutFlow } from './layout';
 import type { FlowDocument, FlowEdge, StageData, StageKind, StageNode } from '../types';
 
 const STAGE_KINDS: StageKind[] = ['start', 'process', 'decision', 'end'];
+const PORT_IDS = new Set(['left', 'right', 'top-left', 'top-right', 'bottom-left', 'bottom-right']);
+
+function validHandle(value: unknown, role: 'source' | 'target'): string | undefined {
+  if (typeof value !== 'string' || !value.startsWith(`${role}-`)) return undefined;
+  return PORT_IDS.has(value.slice(role.length + 1)) ? value : undefined;
+}
 
 export function createId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -80,12 +86,12 @@ export function parseFlowDocument(input: unknown): FlowDocument {
     const id = text(raw.id, '', 120);
     const source = text(raw.source, '', 120);
     const target = text(raw.target, '', 120);
-    const sourceHandle = text(raw.sourceHandle, '', 120);
-    const targetHandle = text(raw.targetHandle, '', 120);
+    const sourceHandle = validHandle(raw.sourceHandle, 'source');
+    const targetHandle = validHandle(raw.targetHandle, 'target');
     if (!id || edgeIds.has(id) || !nodeIds.has(source) || !nodeIds.has(target)) throw new Error(`第 ${index + 1} 条连线数据无效`);
     edgeIds.add(id);
-    const label = text(raw.label, '', 120);
     const condition = isRecord(raw.data) ? text(raw.data.condition, '', 120) : '';
+    const label = text(raw.label, '', 120) || condition;
     const data = isRecord(raw.data) ? raw.data : {};
     const waypoints = Array.isArray(data.waypoints) ? data.waypoints.slice(0, 50).map((point) => {
       if (!isRecord(point) || typeof point.x !== 'number' || typeof point.y !== 'number' || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error(`第 ${index + 1} 条连线折点无效`);

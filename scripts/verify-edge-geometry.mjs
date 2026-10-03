@@ -142,7 +142,7 @@ socket.close();
 
 if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
 const diagnostics = result.result.value;
-const invalid = diagnostics.filter((edge) => edge.missing || edge.sourceError > 0.75 || edge.targetError > 0.75 || edge.obstacleHits > 0 || edge.zIndex < 1);
+const invalid = diagnostics.filter((edge) => edge.missing || edge.sourceError > 0.75 || edge.targetError > 0.75 || edge.obstacleHits > 0 || edge.zIndex > 0);
 if (invalid.length) throw new Error(`连线几何验证失败：${JSON.stringify(invalid)}`);
 const selection = selectionResult.result.value;
 if (!selection.selected || selection.animationName !== 'edge-flow-forward' || selection.dasharray === 'none') {

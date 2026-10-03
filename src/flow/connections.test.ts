@@ -51,6 +51,18 @@ describe('orientConnectionFromOrigin', () => {
 describe('optimizeConnectionHandles', () => {
   const nodes = [node('left', 100, 200), node('right', 420, 200), node('lower', 420, 360)];
 
+  it('assigns facing handles to legacy edges before routing', () => {
+    expect(optimizeConnectionHandles({ source: 'left', target: 'lower' }, nodes)).toEqual({
+      source: 'left', target: 'lower', sourceHandle: 'source-bottom-left', targetHandle: 'target-top-left'
+    });
+    expect(optimizeConnectionHandles({ source: 'lower', target: 'right' }, nodes)).toEqual({
+      source: 'lower', target: 'right', sourceHandle: 'source-top-right', targetHandle: 'target-bottom-right'
+    });
+    expect(optimizeConnectionHandles({ source: 'left', target: 'lower', sourceHandle: 'source-bottom-left' }, nodes)).toEqual({
+      source: 'left', target: 'lower', sourceHandle: 'source-bottom-left', targetHandle: 'target-left'
+    });
+  });
+
   it('uses facing side handles for nodes on the same horizontal level', () => {
     expect(optimizeConnectionHandles({
       source: 'right',

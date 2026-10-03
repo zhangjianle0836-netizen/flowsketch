@@ -26,15 +26,17 @@ export type FlowDocument = {
 export type SaveResult = { canceled: boolean; filePath?: string };
 
 export type FlowAPI = {
-  openFlow: () => Promise<{ canceled: boolean; document?: unknown; filePath?: string }>;
-  saveFlow: (document: FlowDocument, saveAs?: boolean) => Promise<SaveResult>;
-  autosaveFlow: (document: FlowDocument) => Promise<{ filePath: string; isRecovery: boolean }>;
-  loadRecovery: () => Promise<{ found: boolean; document?: unknown }>;
-  newFlow: () => Promise<{ success: boolean }>;
+  openFlow: () => Promise<{ canceled: boolean; document?: unknown; filePath?: string; requestId?: string }>;
+  activateOpenedFlow: (requestId: string) => Promise<{ session: number }>;
+  saveFlow: (document: FlowDocument, session: number, saveAs?: boolean) => Promise<SaveResult>;
+  autosaveFlow: (document: FlowDocument, session: number) => Promise<{ filePath: string; isRecovery: boolean }>;
+  loadRecovery: () => Promise<{ found: boolean; document?: unknown; session: number }>;
+  newFlow: () => Promise<{ success: boolean; session: number }>;
   exportMarkdown: (content: string, title: string) => Promise<SaveResult>;
   exportImage: (dataUrl: string, format: 'png' | 'svg', title: string) => Promise<SaveResult>;
   getTheme: () => Promise<'light' | 'dark'>;
   onThemeChange: (callback: (theme: 'light' | 'dark') => void) => () => void;
+  onPrepareClose: (callback: () => Promise<unknown>) => () => void;
 };
 
 declare global {

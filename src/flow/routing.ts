@@ -79,6 +79,16 @@ function inflatedRect(node: StageNode): RouteRect {
   };
 }
 
+function nodeRect(node: StageNode): RouteRect {
+  const { width, height } = nodeSize(node);
+  return {
+    left: node.position.x,
+    top: node.position.y,
+    right: node.position.x + width,
+    bottom: node.position.y + height
+  };
+}
+
 function geometryOf(node: StageNode): NodeGeometry {
   const { width, height } = nodeSize(node);
   return { x: node.position.x, y: node.position.y, width, height };
@@ -193,14 +203,13 @@ function candidateRoutes(source: RoutePoint, sourceLead: RoutePoint, targetLead:
   return middleRoutes.map((middle) => collapse([source, ...middle, target]));
 }
 
-function chooseRoute(candidates: RoutePoint[][], rects: RouteRect[], existingRoutes: RoutePoint[][]) {
+function chooseRoute(candidates: RoutePoint[][], rects: RouteRect[], existingSegments: RouteSegment[]) {
   return candidates.reduce((best, candidate) => {
     const candidateSegments = segments(candidate);
     const collisions = candidateSegments.reduce((count, segment) => count + rects.filter((rect) => segmentHitsRect(segment, rect)).length, 0);
-    const overlap = existingRoutes.reduce((total, route) => total + candidateSegments.reduce((edgeTotal, segment) => (
-      edgeTotal + segments(route).reduce((segmentTotal, existing) => segmentTotal + overlappingLength(segment, existing), 0)
-    ), 0), 0);
-    const score = collisions * 1_000_000 + overlap * 18 + routeLength(candidate) + Math.max(0, candidate.length - 2) * 14;
+    const overlap = candidateSegments.reduce((total, segment) => total + existingSegments.reduce((sum, existing) => sum + overlappingLength(segment, existing), 0), 0);
+    const length = candidateSegments.reduce((total, segment) => total + Math.abs(segment.to.x - segment.from.x) + Math.abs(segment.to.y - segment.from.y), 0);
+    const score = collisions * 1_000_000 + overlap * 18 + length + Math.max(0, candidate.length - 2) * 14;
     return !best || score < best.score ? { points: candidate, score } : best;
   }, null as { points: RoutePoint[]; score: number } | null)?.points || candidates[0];
 }
@@ -215,6 +224,7 @@ export function validEdgeRoute(nodes: StageNode[], edge: FlowEdge, points: Route
   const close = (first: RoutePoint, second: RoutePoint) => Math.abs(first.x - second.x) < 0.75 && Math.abs(first.y - second.y) < 0.75;
   return close(points[0], start) && close(points.at(-1)!, end) && points.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y)) &&
     points.slice(1).every((point, index) => Math.abs(point.x - points[index].x) < EPSILON || Math.abs(point.y - points[index].y) < EPSILON) &&
+    !segments(points).some((segment) => segmentHitsRect(segment, nodeRect(source)) || segmentHitsRect(segment, nodeRect(target))) &&
     !routeIntersectsNodes(points, edge, nodes, new Set(nodes.map((node) => node.id)));
 }
 
@@ -240,12 +250,14 @@ export function manualEdgeRoute(nodes: StageNode[], edge: FlowEdge): RoutePoint[
 
 export function routeDiagramEdges(nodes: StageNode[], edges: FlowEdge[]) {
   const nodeLookup = new Map(nodes.map((node) => [node.id, node]));
+  const inflatedRects = new Map(nodes.map((node) => [node.id, inflatedRect(node)]));
+  const nodeRects = new Map(nodes.map((node) => [node.id, nodeRect(node)]));
   const routes = new Map<string, RoutePoint[]>();
-  const existingRoutes: RoutePoint[][] = [];
+  const existingSegments: RouteSegment[] = [];
 
   for (const edge of edges) {
     const manual = manualEdgeRoute(nodes, edge);
-    if (manual) { routes.set(edge.id, manual); existingRoutes.push(manual); continue; }
+    if (manual) { routes.set(edge.id, manual); existingSegments.push(...segments(manual)); continue; }
     const sourceNode = nodeLookup.get(edge.source);
     const targetNode = nodeLookup.get(edge.target);
     if (!sourceNode || !targetNode) continue;
@@ -255,21 +267,23 @@ export function routeDiagramEdges(nodes: StageNode[], edges: FlowEdge[]) {
     const targetLead = moveOut(target.point, target.position);
     const blockingRects = nodes
       .filter((node) => node.id !== edge.source && node.id !== edge.target)
-      .map(inflatedRect);
-    const candidates = candidateRoutes(source.point, sourceLead, targetLead, target.point, blockingRects);
-    const route = chooseRoute(candidates, blockingRects, existingRoutes);
+      .map((node) => inflatedRects.get(node.id)!);
+    const routeRects = [...blockingRects, nodeRects.get(edge.source)!, nodeRects.get(edge.target)!];
+    const candidates = candidateRoutes(source.point, sourceLead, targetLead, target.point, routeRects);
+    const route = chooseRoute(candidates, routeRects, existingSegments);
     routes.set(edge.id, route);
-    existingRoutes.push(route);
+    existingSegments.push(...segments(route));
   }
   return routes;
 }
 
 function routeIntersectsNodes(route: RoutePoint[], edge: FlowEdge, nodes: StageNode[], nodeIds: Set<string>) {
+  const routeSegments = segments(route);
   return nodes.some((node) => (
     nodeIds.has(node.id) &&
     node.id !== edge.source &&
     node.id !== edge.target &&
-    segments(route).some((segment) => segmentHitsRect(segment, inflatedRect(node)))
+    routeSegments.some((segment) => segmentHitsRect(segment, inflatedRect(node)))
   ));
 }
 

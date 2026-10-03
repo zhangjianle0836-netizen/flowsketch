@@ -102,6 +102,9 @@ function FlowSketchApp() {
   const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [dirty, setDirty] = useState(false);
   const [revision, setRevision] = useState(0);
+  const revisionRef = useRef(0);
+  const persistedRevisionRef = useRef(0);
+  const sessionRef = useRef(1);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [status, setStatus] = useState('已就绪');
   const [exporting, setExporting] = useState(false);
@@ -240,6 +243,8 @@ function FlowSketchApp() {
   useEffect(() => {
     if (!window.flowAPI) return;
     window.flowAPI.loadRecovery().then((result) => {
+      if (revisionRef.current !== 0 || result.session !== sessionRef.current) return;
+      sessionRef.current = result.session;
       if (!result.found || !result.document) return;
       try {
         const recovered = parseFlowDocument(result.document);
@@ -253,13 +258,22 @@ function FlowSketchApp() {
     }).catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    if (!window.flowAPI) return;
+    return window.flowAPI.onPrepareClose(async () => {
+      if (revisionRef.current === persistedRevisionRef.current) return;
+      await window.flowAPI!.autosaveFlow(cleanDocument(documentRef.current), sessionRef.current);
+    });
+  }, []);
+
   const replaceDocument = useCallback((next: FlowDocument, markDirty = true) => {
     const updated = { ...next, updatedAt: new Date().toISOString() };
     documentRef.current = updated;
     setFlowDocument(updated);
     if (markDirty) {
       setDirty(true);
-      setRevision((value) => value + 1);
+      revisionRef.current += 1;
+      setRevision(revisionRef.current);
     }
   }, []);
 
@@ -298,33 +312,55 @@ function FlowSketchApp() {
     if (!revision || !window.flowAPI) return;
     setStatus('正在自动保存…');
     const timer = window.setTimeout(() => {
-      window.flowAPI?.autosaveFlow(cleanDocument(documentRef.current))
-        .then((result) => setStatus(result.isRecovery ? '草稿已安全保存' : '更改已自动保存'))
-        .catch(() => setStatus('自动保存失败，请手动保存'));
+      const savedRevision = revisionRef.current;
+      const session = sessionRef.current;
+      window.flowAPI?.autosaveFlow(cleanDocument(documentRef.current), session)
+        .then((result) => {
+          if (sessionRef.current !== session) return;
+          persistedRevisionRef.current = Math.max(persistedRevisionRef.current, savedRevision);
+          if (revisionRef.current === savedRevision) setStatus(result.isRecovery ? '草稿已安全保存' : '更改已自动保存');
+        })
+        .catch(() => {
+          if (sessionRef.current === session && revisionRef.current === savedRevision) setStatus('自动保存失败，请手动保存');
+        });
     }, 900);
     return () => window.clearTimeout(timer);
   }, [revision]);
 
   const handleSave = useCallback(async (saveAs = false) => {
     setStatus('正在保存…');
+    const savedRevision = revisionRef.current;
+    const session = sessionRef.current;
     try {
       if (window.flowAPI) {
-        const result = await window.flowAPI.saveFlow(cleanDocument(documentRef.current), saveAs);
+        const result = await window.flowAPI.saveFlow(cleanDocument(documentRef.current), session, saveAs);
         if (result.canceled) return setStatus('已取消保存');
+        if (sessionRef.current !== session) return;
         setFilePath(result.filePath || null);
       } else {
         localStorage.setItem('flowcanvas-document', JSON.stringify(cleanDocument(documentRef.current)));
       }
-      setDirty(false);
-      setStatus('流程已保存');
+      persistedRevisionRef.current = Math.max(persistedRevisionRef.current, savedRevision);
+      if (revisionRef.current === savedRevision) {
+        setDirty(false);
+        setStatus('流程已保存');
+      } else {
+        setStatus('已保存先前更改，最新更改正在自动保存');
+      }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : '保存失败');
+      if (sessionRef.current === session) setStatus(error instanceof Error ? error.message : '保存失败');
     }
   }, []);
 
   const handleNew = useCallback(async () => {
     if (dirty && !window.confirm('当前流程有未手动保存的更改，仍要新建吗？草稿将被替换。')) return;
-    await window.flowAPI?.newFlow();
+    try {
+      const result = await window.flowAPI?.newFlow();
+      if (result) sessionRef.current = result.session;
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '新建失败');
+      return;
+    }
     const next = createBlankDocument();
     routeStateRef.current = undefined;
     documentRef.current = next;
@@ -335,6 +371,8 @@ function FlowSketchApp() {
     setSelectedEdgeId(null);
     setFilePath(null);
     setDirty(false);
+    revisionRef.current = 0;
+    persistedRevisionRef.current = 0;
     setRevision(0);
     setStatus('已新建流程');
     window.setTimeout(() => reactFlow.fitView({ padding: 0.25 }), 50);
@@ -345,8 +383,10 @@ function FlowSketchApp() {
     if (dirty && !window.confirm('当前流程有未手动保存的更改，仍要打开其他流程吗？')) return;
     try {
       const result = await window.flowAPI.openFlow();
-      if (result.canceled || !result.document) return;
+      if (result.canceled || !result.document || !result.requestId) return;
       const opened = parseFlowDocument(result.document);
+      const activated = await window.flowAPI.activateOpenedFlow(result.requestId);
+      sessionRef.current = activated.session;
       routeStateRef.current = undefined;
       documentRef.current = opened;
       setFlowDocument(opened);
@@ -356,6 +396,9 @@ function FlowSketchApp() {
       setSelectedEdgeId(null);
       setFilePath(result.filePath || null);
       setDirty(false);
+      revisionRef.current = 0;
+      persistedRevisionRef.current = 0;
+      setRevision(0);
       setStatus('流程工程已打开');
       window.setTimeout(() => reactFlow.fitView({ padding: 0.25 }), 50);
     } catch (error) {
@@ -715,7 +758,8 @@ function FlowSketchApp() {
     setFlowDocument(updated);
     if (meaningful) {
       setDirty(true);
-      setRevision((value) => value + 1);
+      revisionRef.current += 1;
+      setRevision(revisionRef.current);
     }
   }, []);
 
@@ -885,7 +929,8 @@ function FlowSketchApp() {
               documentRef.current = updated;
               setFlowDocument(updated);
               setDirty(true);
-              setRevision((value) => value + 1);
+              revisionRef.current += 1;
+              setRevision(revisionRef.current);
             }}
           />
           <small>{dirty ? '有未手动保存的更改' : filePath ? filePath.split(/[\\/]/).pop() : '本地流程工程'}</small>
@@ -1041,13 +1086,14 @@ function FlowSketchApp() {
             selectionMode={SelectionMode.Partial}
             connectionRadius={28}
             connectOnClick
+            elevateEdgesOnSelect={false}
             deleteKeyCode={null}
             snapToGrid
             snapGrid={[16, 16]}
             defaultEdgeOptions={{
               type: 'routed',
               markerEnd: { type: MarkerType.ArrowClosed },
-              zIndex: 2,
+              zIndex: 0,
               interactionWidth: 24,
               style: { strokeWidth: 1.8 }
             }}

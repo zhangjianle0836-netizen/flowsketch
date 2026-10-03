@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FlowEdge, StageNode } from '../types';
-import { routeDiagramEdges, updateDiagramRoutes } from './routing';
+import { routeDiagramEdges, updateDiagramRoutes, validEdgeRoute } from './routing';
 
 function node(id: string, x: number, y: number): StageNode {
   return {
@@ -13,6 +13,15 @@ function node(id: string, x: number, y: number): StageNode {
 }
 
 describe('routeDiagramEdges', () => {
+  it('rejects a route that reenters its source node after leaving a bottom port', () => {
+    const nodes = [node('source', 0, 0), node('target', 310, 178)];
+    const edge: FlowEdge = { id: 'edge', source: 'source', target: 'target', sourceHandle: 'source-bottom-left', targetHandle: 'target-top-left' };
+    const crossing = [{ x: 71.4, y: 88 }, { x: 71.4, y: 83 }, { x: 381.4, y: 83 }, { x: 381.4, y: 178 }];
+
+    expect(validEdgeRoute(nodes, edge, crossing)).toBe(false);
+    expect(validEdgeRoute(nodes, edge, routeDiagramEdges(nodes, [edge]).get(edge.id)!)).toBe(true);
+  });
+
   it('routes around a node that blocks the direct corridor', () => {
     const nodes = [node('source', 0, 100), node('blocker', 260, 100), node('target', 560, 100)];
     const edges: FlowEdge[] = [{
