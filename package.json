@@ -48,6 +48,8 @@
       "preload.js",
       "dist/**/*",
       "build/icon.png",
+      "LICENSE",
+      "licenses/LGPL-2.1.txt",
       "THIRD_PARTY_NOTICES.md",
       "package.json"
     ],

@@ -2,9 +2,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SIGNER_NAME="${CSC_NAME:-Fupu Technology (Beijing) Co., Ltd. (4M8PLCQCFP)}"
-SIGNER_IDENTITY="${CODESIGN_IDENTITY:-Developer ID Application: Fupu Technology (Beijing) Co., Ltd. (4M8PLCQCFP)}"
-SIGNING_KEYCHAIN="${CODESIGN_KEYCHAIN:-/Users/zhangjianle/Library/Keychains/login.keychain-db}"
+SIGNER_IDENTITY="${CODESIGN_IDENTITY:?请设置 CODESIGN_IDENTITY 为本机 Developer ID Application 签名身份}"
+SIGNER_NAME="${CSC_NAME:-$SIGNER_IDENTITY}"
+SIGNING_KEYCHAIN="${CODESIGN_KEYCHAIN:-}"
 
 cd "$PROJECT_DIR"
 export RAYON_NUM_THREADS=2
@@ -27,10 +27,15 @@ if [[ -z "$APP_PATH" || ! -f "$DMG_PATH" ]]; then
   exit 1
 fi
 
+KEYCHAIN_ARGS=()
+if [[ -n "$SIGNING_KEYCHAIN" ]]; then
+  KEYCHAIN_ARGS=(--keychain "$SIGNING_KEYCHAIN")
+fi
+
 /usr/bin/codesign \
   --force \
   --sign "$SIGNER_IDENTITY" \
-  --keychain "$SIGNING_KEYCHAIN" \
+  "${KEYCHAIN_ARGS[@]}" \
   --timestamp \
   --verbose=2 \
   "$DMG_PATH"

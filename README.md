@@ -2,6 +2,23 @@
 
 流绘是一款专注流程图绘制的本地桌面工具。它不包含 Markdown 编辑器；用户在画布中维护流程和阶段备注，需要交付时再导出包含 Mermaid 流程图与阶段说明的 Markdown 文档。
 
+项目采用 [MIT 许可证](LICENSE)；依赖许可信息见 [第三方声明](THIRD_PARTY_NOTICES.md)。欢迎阅读[贡献指南](CONTRIBUTING.md)参与改进。
+
+![流绘桌面界面：示例退款审核流程](docs/images/overview.png)
+
+## 获取与运行
+
+目前仓库提供源码构建，尚未发布 GitHub Releases 安装包。需要 Node.js `^20.19.0` 或 `>=22.12.0`、npm 10 或更高版本。
+
+```bash
+git clone https://github.com/zhangjianle0836-netizen/flowsketch.git
+cd flowsketch
+npm ci
+npm start
+```
+
+`npm start` 会先检查 TypeScript、构建前端，再启动桌面应用。当前打包配置面向 macOS ARM64 和 Windows x64；构建方法见 [BUILD.md](BUILD.md)。
+
 ## 核心能力
 
 - 开始、处理、判断、结束四类流程节点
@@ -28,6 +45,8 @@
 - Vitest：数据模型与 Markdown 导出测试
 - electron-builder：桌面安装包
 
+模块分工和保存、路由的数据流见 [架构说明](docs/architecture.md)。
+
 ## 开发与验证
 
 ```bash
@@ -42,6 +61,8 @@ npm start         # 构建并启动 Electron 应用
 ## 工程文件
 
 流绘使用带版本号的 `.flow.json` 作为可编辑源文件。文件中保存节点、连线、画布位置、阶段类型和备注。Markdown 是导出文档，不再作为编辑源。打开工程时会先完成校验，再切换当前保存目标；旧工程中无效的连接点会回退到可用点位，旧版条件文字会显示为连线标注。编辑后会自动保存，关闭窗口时会写入尚未完成自动保存的最新更改。
+
+工程格式及兼容规则见 [docs/flow-format.md](docs/flow-format.md)。应用无需账号；已打开的工程自动保存到原文件，未命名工程的草稿保存在 Electron 用户数据目录的 `recovery.flow.json`。请勿把包含个人或业务信息的工程文件直接提交到公开仓库。
 
 ## 快捷键
 
@@ -95,7 +116,7 @@ npm run pack:mac:signed
 npm run pack:win
 ```
 
-`pack:mac:signed` 会使用本机钥匙串中的 Developer ID Application 身份生成并验证 ARM64 DMG。该流程完成代码签名，但不包含 Apple 公证。
+`pack:mac:signed` 需要通过 `CODESIGN_IDENTITY` 提供本机 Developer ID Application 身份，可选 `CODESIGN_KEYCHAIN` 指定钥匙串；命令与公证说明见 [BUILD.md](BUILD.md)。
 
 ## 流程检查与编辑
 

@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "未检测到 Node.js，请安装 Node.js 20 或更高版本。"
+  echo "未检测到 Node.js，请安装 Node.js 20.19+ 或 22.12+。"
   exit 1
 fi
 

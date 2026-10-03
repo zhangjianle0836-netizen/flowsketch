@@ -7,7 +7,7 @@ Adaptagrams libavoid.
 
 - Source: https://github.com/Aksem/libavoid-js
 - License: GNU Lesser General Public License v2.1 or later
-- License text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+- License text: [licenses/LGPL-2.1.txt](licenses/LGPL-2.1.txt)
 
 The corresponding dependency package and source location are recorded in
 `package-lock.json`.

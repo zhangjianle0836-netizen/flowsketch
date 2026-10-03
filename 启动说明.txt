@@ -24,7 +24,7 @@
   npm run pack:win
 
 环境要求：
-  Node.js >= 20
+  Node.js ^20.19.0 或 >= 22.12.0
   npm >= 10
 
 常用快捷键：
